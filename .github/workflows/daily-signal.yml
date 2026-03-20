@@ -1,0 +1,33 @@
+name: Daily Signal
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "5 22 * * 1-5"
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install pandas numpy yfinance ta
+
+      - run: |
+          if [ ! -f positions.csv ]; then
+            echo "ticker,entry_date" > positions.csv
+          fi
+
+      - run: python v87_daily.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: result
+          path: |
+            today_entry.csv
+            today_exit.csv
