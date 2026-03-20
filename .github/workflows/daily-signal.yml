@@ -3,6 +3,7 @@ name: Daily Signal
 on:
   workflow_dispatch:
   schedule:
+    # JST 07:05 = UTC 22:05 (previous day)
     - cron: "5 22 * * 1-5"
 
 jobs:
@@ -10,24 +11,96 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - run: pip install pandas numpy yfinance ta
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy yfinance ta
 
-      - run: |
+      - name: Prepare empty positions file if missing
+        run: |
           if [ ! -f positions.csv ]; then
             echo "ticker,entry_date" > positions.csv
           fi
 
-      - run: python v87_daily.py
+      - name: Run daily signal script
+        run: python v87_daily.py
 
-      - uses: actions/upload-artifact@v4
+      - name: Send result to Discord
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          python - <<'PY'
+          import os
+          import json
+          import pandas as pd
+          from urllib.request import Request, urlopen
+
+          webhook = os.environ["DISCORD_WEBHOOK_URL"]
+
+          def read_csv_safe(path, columns):
+              try:
+                  df = pd.read_csv(path)
+                  return df
+              except Exception:
+                  return pd.DataFrame(columns=columns)
+
+          entry = read_csv_safe("today_entry.csv", ["ticker", "date", "rsi", "score"])
+          exit_df = read_csv_safe("today_exit.csv", ["ticker", "reason"])
+
+          lines = []
+          lines.append("**Daily Signal Result**")
+
+          if entry.empty:
+              lines.append("")
+              lines.append("**TODAY ENTRY**")
+              lines.append("- no entry")
+          else:
+              lines.append("")
+              lines.append("**TODAY ENTRY**")
+              for _, row in entry.iterrows():
+                  lines.append(
+                      f"- {row['ticker']} | date={row['date']} | rsi={row['rsi']:.2f} | score={row['score']:.2f}"
+                  )
+
+          if exit_df.empty:
+              lines.append("")
+              lines.append("**TODAY EXIT**")
+              lines.append("- no exit")
+          else:
+              lines.append("")
+              lines.append("**TODAY EXIT**")
+              for _, row in exit_df.iterrows():
+                  lines.append(
+                      f"- {row['ticker']} | reason={row['reason']}"
+                  )
+
+          content = "\n".join(lines)
+
+          data = json.dumps({"content": content}).encode("utf-8")
+          req = Request(
+              webhook,
+              data=data,
+              headers={"Content-Type": "application/json"},
+              method="POST",
+          )
+
+          with urlopen(req) as resp:
+              print("Discord webhook status:", resp.status)
+          PY
+
+      - name: Upload CSV outputs
+        uses: actions/upload-artifact@v4
         with:
-          name: result
+          name: daily-signal-csv
           path: |
             today_entry.csv
             today_exit.csv
+            positions.csv
