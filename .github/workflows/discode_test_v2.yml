@@ -1,4 +1,4 @@
-name: Discord Test
+name: Discord Test 2
 
 on:
   workflow_dispatch:
