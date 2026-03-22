@@ -6,7 +6,6 @@ on:
 jobs:
   discord-test:
     runs-on: ubuntu-latest
-
     steps:
       - name: Test Discord webhook
         env:
