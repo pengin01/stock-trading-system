@@ -1,4 +1,4 @@
-name: Discord Test 3
+name: Discord Test 4
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ jobs:
 
     steps:
       - name: Install requests
-        run: pip install requests
+        run: python -m pip install requests
 
       - name: Test Discord webhook
         env:
@@ -24,7 +24,9 @@ jobs:
           resp = requests.post(
               webhook,
               json={"content": "GitHub Actions test message"},
-              headers={"User-Agent": "Mozilla/5.0"},
+              headers={
+                  "User-Agent": "Mozilla/5.0 GitHubActions DiscordWebhookTest/1.0"
+              },
               timeout=30,
           )
 
