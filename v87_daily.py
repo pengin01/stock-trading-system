@@ -1,14 +1,17 @@
-# v87_daily.py
+# v88_daily_auto_position.py
 # -*- coding: utf-8 -*-
-# pip install pandas numpy yfinance ta
 
 from dataclasses import dataclass
 import pandas as pd
 import numpy as np
 import yfinance as yf
 import ta
+import os
 
 
+# =========================
+# PARAMETERS
+# =========================
 @dataclass
 class Params:
     ma_days: int = 25
@@ -22,9 +25,13 @@ class Params:
 
 
 P = Params()
+
 STOCK_UNIVERSE = ["9432.T", "6758.T", "9984.T"]
 
 
+# =========================
+# DATA
+# =========================
 def download(t):
     df = yf.download(t, period=f"{P.years}y", interval="1d", progress=False)
     if df.empty:
@@ -43,9 +50,12 @@ def add_features(df):
     return df
 
 
+# =========================
+# SIGNAL
+# =========================
 def entry_signal(df, i):
     c = df["Close"].iloc[i]
-    prev = df["Close"].iloc[i-1]
+    prev = df["Close"].iloc[i - 1]
     ma = df["MA"].iloc[i]
     rsi = df["RSI"].iloc[i]
     v = df["VALUE20"].iloc[i]
@@ -60,21 +70,27 @@ def entry_signal(df, i):
         return False
     if v < P.min_avg_value20:
         return False
+
     return True
 
 
+# =========================
+# ENTRY
+# =========================
 def today_entry():
+
     today = pd.Timestamp.now().normalize()
     candidates = []
 
     for t in STOCK_UNIVERSE:
+
         df = download(t)
         if df.empty:
             continue
 
         df = add_features(df)
-        hist = df[df.index.normalize() < today]
 
+        hist = df[df.index.normalize() < today]
         if len(hist) < P.ma_days + 2:
             continue
 
@@ -96,59 +112,87 @@ def today_entry():
     return pd.DataFrame(candidates).sort_values("score").head(1)
 
 
-def today_exit():
-    try:
-        pos = pd.read_csv(P.pos_file, parse_dates=["entry_date"])
-    except:
-        return pd.DataFrame()
-
-    if pos.empty:
-        return pd.DataFrame()
+# =========================
+# EXIT
+# =========================
+def today_exit(pos):
 
     today = pd.Timestamp.now().normalize()
     exits = []
 
     for _, row in pos.iterrows():
-        df = download(row["ticker"])
+
+        t = row["ticker"]
+        entry_date = row["entry_date"]
+
+        df = download(t)
         if df.empty:
             continue
 
         df = add_features(df)
+
         hist = df[df.index.normalize() < today]
         if hist.empty:
             continue
 
         last = hist.iloc[-1]
-        hold = (hist.index[-1] - row["entry_date"]).days
+        hold = (hist.index[-1] - entry_date).days
 
         if last["Close"] < last["MA"]:
-            exits.append({"ticker": row["ticker"], "reason": "MA_EXIT"})
+            exits.append({"ticker": t, "reason": "MA_EXIT"})
         elif hold >= P.hold_days:
-            exits.append({"ticker": row["ticker"], "reason": "TIME"})
+            exits.append({"ticker": t, "reason": "TIME"})
 
     return pd.DataFrame(exits)
 
 
+# =========================
+# POSITION LOAD/SAVE
+# =========================
+def load_positions():
+    if not os.path.exists(P.pos_file):
+        return pd.DataFrame(columns=["ticker", "entry_date"])
+
+    df = pd.read_csv(P.pos_file, parse_dates=["entry_date"])
+    return df
+
+
+def save_positions(df):
+    df.to_csv(P.pos_file, index=False)
+
+
+# =========================
+# MAIN
+# =========================
 def main():
 
     print("RUN:", pd.Timestamp.now())
 
-    entry = today_entry()
-    exit_df = today_exit()
+    pos = load_positions()
 
+    entry = today_entry()
+    exit_df = today_exit(pos)
+
+    # ===== EXIT反映 =====
+    if not exit_df.empty:
+        pos = pos[~pos["ticker"].isin(exit_df["ticker"])]
+
+    # ===== ENTRY反映 =====
+    if not entry.empty:
+        new_rows = entry[["ticker", "date"]].rename(columns={"date": "entry_date"})
+        pos = pd.concat([pos, new_rows], ignore_index=True)
+
+    save_positions(pos)
+
+    # ===== 表示 =====
     print("== TODAY ENTRY ==")
-    if entry.empty:
-        print("(no entry)")
-    else:
-        print(entry.to_string(index=False))
-        entry.to_csv("today_entry.csv", index=False)
+    print("(no entry)" if entry.empty else entry.to_string(index=False))
 
     print("\n== TODAY EXIT ==")
-    if exit_df.empty:
-        print("(no exit)")
-    else:
-        print(exit_df.to_string(index=False))
-        exit_df.to_csv("today_exit.csv", index=False)
+    print("(no exit)" if exit_df.empty else exit_df.to_string(index=False))
+
+    print("\n== POSITIONS ==")
+    print("(empty)" if pos.empty else pos.to_string(index=False))
 
 
 if __name__ == "__main__":
