@@ -31,12 +31,17 @@ class Params:
     entry_file: str = "today_entry.csv"
     exit_file: str = "today_exit.csv"
     log_file: str = "daily_result_log.csv"
+    diagnostics_file: str = "entry_diagnostics.csv"
 
 
 P = Params()
 
-STOCK_UNIVERSE = ["9432.T", "6758.T", "9984.T"]
-
+# STOCK_UNIVERSE = ["9432.T", "6758.T", "9984.T"]
+STOCK_UNIVERSE = [
+    "9432.T", "6758.T", "9984.T",
+    "7203.T", "8306.T", "8035.T", "6501.T",
+    "6861.T", "4063.T", "7267.T"
+]
 
 # =========================
 # DATA
@@ -160,25 +165,14 @@ def today_entry() -> pd.DataFrame:
 
 
 # =========================
-# TODAY EXIT
+# ENTRY DIAGNOSTICS
 # =========================
-def today_exit(pos_df: pd.DataFrame) -> pd.DataFrame:
-    if pos_df.empty:
-        return pd.DataFrame(columns=[
-            "run_date", "ticker", "entry_date", "last_date", "hold_days_calendar",
-            "entry_price", "close", "ma", "shares", "reason"
-        ])
-
+def entry_diagnostics() -> pd.DataFrame:
     today = pd.Timestamp.now().normalize()
-    exits = []
+    rows = []
 
-    for _, row in pos_df.iterrows():
+    for ticker in STOCK_UNIVERSE:
         try:
-            ticker = row["ticker"]
-            entry_date = pd.to_datetime(row["entry_date"]).tz_localize(None)
-            entry_price = float(row.get("entry_price", np.nan))
-            shares = int(row.get("shares", 0))
-
             df = download(ticker)
             if df.empty:
                 continue
@@ -186,59 +180,123 @@ def today_exit(pos_df: pd.DataFrame) -> pd.DataFrame:
             df = add_features(df)
 
             hist = df[df.index.normalize() < today]
-            if hist.empty:
-                continue
-
-            last_i = len(hist) - 1
-            last_date = hist.index[last_i]
-            last_close = float(hist["Close"].iloc[last_i])
-            last_ma = float(hist["MA"].iloc[last_i])
-
-            hold_days_calendar = (last_date.normalize() - entry_date.normalize()).days
-
-            if not np.isfinite([last_close, last_ma]).all():
-                continue
-
-            if last_close < last_ma:
-                exits.append({
+            if len(hist) < P.ma_days + 2:
+                rows.append({
                     "run_date": today.date(),
                     "ticker": ticker,
-                    "entry_date": entry_date.date(),
-                    "last_date": last_date.date(),
-                    "hold_days_calendar": hold_days_calendar,
-                    "entry_price": round(entry_price, 4) if np.isfinite(entry_price) else np.nan,
-                    "close": round(last_close, 4),
-                    "ma": round(last_ma, 4),
-                    "shares": shares,
-                    "reason": "MA_EXIT",
+                    "signal_date": None,
+                    "close": np.nan,
+                    "prev_close": np.nan,
+                    "ma": np.nan,
+                    "rsi": np.nan,
+                    "value20": np.nan,
+                    "pullback_threshold": np.nan,
+                    "cond_data_ready": False,
+                    "cond_ma": False,
+                    "cond_pullback": False,
+                    "cond_rsi": False,
+                    "cond_value": False,
+                    "all_pass": False,
+                    "fail_reason": "NOT_ENOUGH_HISTORY",
                 })
                 continue
 
-            if hold_days_calendar >= P.hold_days:
-                exits.append({
+            i = len(hist) - 1
+
+            c = float(hist["Close"].iloc[i])
+            prev = float(hist["Close"].iloc[i - 1])
+            ma = float(hist["MA"].iloc[i])
+            rsi = float(hist["RSI"].iloc[i])
+            v = float(hist["VALUE20"].iloc[i])
+
+            vals = np.array([c, prev, ma, rsi, v], dtype=float)
+            data_ready = bool(np.isfinite(vals).all())
+
+            if not data_ready:
+                rows.append({
                     "run_date": today.date(),
                     "ticker": ticker,
-                    "entry_date": entry_date.date(),
-                    "last_date": last_date.date(),
-                    "hold_days_calendar": hold_days_calendar,
-                    "entry_price": round(entry_price, 4) if np.isfinite(entry_price) else np.nan,
-                    "close": round(last_close, 4),
-                    "ma": round(last_ma, 4),
-                    "shares": shares,
-                    "reason": "TIME",
+                    "signal_date": hist.index[i].date(),
+                    "close": round(c, 4) if np.isfinite(c) else np.nan,
+                    "prev_close": round(prev, 4) if np.isfinite(prev) else np.nan,
+                    "ma": round(ma, 4) if np.isfinite(ma) else np.nan,
+                    "rsi": round(rsi, 4) if np.isfinite(rsi) else np.nan,
+                    "value20": round(v, 0) if np.isfinite(v) else np.nan,
+                    "pullback_threshold": round(prev * (1 - P.pullback_pct), 4) if np.isfinite(prev) else np.nan,
+                    "cond_data_ready": False,
+                    "cond_ma": False,
+                    "cond_pullback": False,
+                    "cond_rsi": False,
+                    "cond_value": False,
+                    "all_pass": False,
+                    "fail_reason": "NAN_OR_INF",
                 })
                 continue
+
+            cond_ma = c >= ma
+            cond_pullback = c <= prev * (1 - P.pullback_pct)
+            cond_rsi = rsi <= P.rsi_max
+            cond_value = v >= P.min_avg_value20
+            all_pass = cond_ma and cond_pullback and cond_rsi and cond_value
+
+            fail_reasons = []
+            if not cond_ma:
+                fail_reasons.append("MA")
+            if not cond_pullback:
+                fail_reasons.append("PULLBACK")
+            if not cond_rsi:
+                fail_reasons.append("RSI")
+            if not cond_value:
+                fail_reasons.append("VALUE20")
+
+            rows.append({
+                "run_date": today.date(),
+                "ticker": ticker,
+                "signal_date": hist.index[i].date(),
+                "close": round(c, 4),
+                "prev_close": round(prev, 4),
+                "ma": round(ma, 4),
+                "rsi": round(rsi, 4),
+                "value20": round(v, 0),
+                "pullback_threshold": round(prev * (1 - P.pullback_pct), 4),
+                "cond_data_ready": True,
+                "cond_ma": cond_ma,
+                "cond_pullback": cond_pullback,
+                "cond_rsi": cond_rsi,
+                "cond_value": cond_value,
+                "all_pass": all_pass,
+                "fail_reason": "" if all_pass else "|".join(fail_reasons),
+            })
 
         except Exception as e:
-            print(f"[WARN] exit check failed: {row.get('ticker', 'UNKNOWN')}: {e}")
+            print(f"[WARN] diagnostics failed: {ticker}: {e}")
+            rows.append({
+                "run_date": today.date(),
+                "ticker": ticker,
+                "signal_date": None,
+                "close": np.nan,
+                "prev_close": np.nan,
+                "ma": np.nan,
+                "rsi": np.nan,
+                "value20": np.nan,
+                "pullback_threshold": np.nan,
+                "cond_data_ready": False,
+                "cond_ma": False,
+                "cond_pullback": False,
+                "cond_rsi": False,
+                "cond_value": False,
+                "all_pass": False,
+                "fail_reason": f"ERROR:{e}",
+            })
 
-    if not exits:
+    if not rows:
         return pd.DataFrame(columns=[
-            "run_date", "ticker", "entry_date", "last_date", "hold_days_calendar",
-            "entry_price", "close", "ma", "shares", "reason"
+            "run_date", "ticker", "signal_date", "close", "prev_close", "ma", "rsi",
+            "value20", "pullback_threshold", "cond_data_ready", "cond_ma",
+            "cond_pullback", "cond_rsi", "cond_value", "all_pass", "fail_reason"
         ])
 
-    return pd.DataFrame(exits).reset_index(drop=True)
+    return pd.DataFrame(rows)
 
 
 # =========================
@@ -277,6 +335,95 @@ def save_positions(pos_df: pd.DataFrame) -> None:
     if not pos_df.empty:
         pos_df["entry_date"] = pd.to_datetime(pos_df["entry_date"]).dt.strftime("%Y-%m-%d")
     pos_df.to_csv(P.pos_file, index=False, encoding="utf-8-sig")
+
+
+# =========================
+# TODAY EXIT
+# =========================
+def today_exit(pos_df: pd.DataFrame) -> pd.DataFrame:
+    if pos_df.empty:
+        return pd.DataFrame(columns=[
+            "run_date", "ticker", "entry_date", "last_date", "hold_days_calendar",
+            "entry_price", "close", "ma", "shares", "pnl_yen", "pnl_pct", "reason"
+        ])
+
+    today = pd.Timestamp.now().normalize()
+    exits = []
+
+    for _, row in pos_df.iterrows():
+        try:
+            ticker = row["ticker"]
+            entry_date = pd.to_datetime(row["entry_date"]).tz_localize(None)
+            entry_price = float(row.get("entry_price", np.nan))
+            shares = int(row.get("shares", 0))
+
+            df = download(ticker)
+            if df.empty:
+                continue
+
+            df = add_features(df)
+
+            hist = df[df.index.normalize() < today]
+            if hist.empty:
+                continue
+
+            last_i = len(hist) - 1
+            last_date = hist.index[last_i]
+            last_close = float(hist["Close"].iloc[last_i])
+            last_ma = float(hist["MA"].iloc[last_i])
+
+            hold_days_calendar = (last_date.normalize() - entry_date.normalize()).days
+
+            if not np.isfinite([last_close, last_ma]).all():
+                continue
+
+            pnl_yen = (last_close - entry_price) * shares if np.isfinite(entry_price) else np.nan
+            pnl_pct = (last_close / entry_price - 1) if np.isfinite(entry_price) and entry_price != 0 else np.nan
+
+            if last_close < last_ma:
+                exits.append({
+                    "run_date": today.date(),
+                    "ticker": ticker,
+                    "entry_date": entry_date.date(),
+                    "last_date": last_date.date(),
+                    "hold_days_calendar": hold_days_calendar,
+                    "entry_price": round(entry_price, 4) if np.isfinite(entry_price) else np.nan,
+                    "close": round(last_close, 4),
+                    "ma": round(last_ma, 4),
+                    "shares": shares,
+                    "pnl_yen": round(pnl_yen, 2) if np.isfinite(pnl_yen) else np.nan,
+                    "pnl_pct": round(pnl_pct, 5) if np.isfinite(pnl_pct) else np.nan,
+                    "reason": "MA_EXIT",
+                })
+                continue
+
+            if hold_days_calendar >= P.hold_days:
+                exits.append({
+                    "run_date": today.date(),
+                    "ticker": ticker,
+                    "entry_date": entry_date.date(),
+                    "last_date": last_date.date(),
+                    "hold_days_calendar": hold_days_calendar,
+                    "entry_price": round(entry_price, 4) if np.isfinite(entry_price) else np.nan,
+                    "close": round(last_close, 4),
+                    "ma": round(last_ma, 4),
+                    "shares": shares,
+                    "pnl_yen": round(pnl_yen, 2) if np.isfinite(pnl_yen) else np.nan,
+                    "pnl_pct": round(pnl_pct, 5) if np.isfinite(pnl_pct) else np.nan,
+                    "reason": "TIME",
+                })
+                continue
+
+        except Exception as e:
+            print(f"[WARN] exit check failed: {row.get('ticker', 'UNKNOWN')}: {e}")
+
+    if not exits:
+        return pd.DataFrame(columns=[
+            "run_date", "ticker", "entry_date", "last_date", "hold_days_calendar",
+            "entry_price", "close", "ma", "shares", "pnl_yen", "pnl_pct", "reason"
+        ])
+
+    return pd.DataFrame(exits).reset_index(drop=True)
 
 
 def apply_position_updates(pos_df: pd.DataFrame, entry_df: pd.DataFrame, exit_df: pd.DataFrame) -> pd.DataFrame:
@@ -335,9 +482,21 @@ def save_daily_csv(entry_df: pd.DataFrame, exit_df: pd.DataFrame) -> None:
     exit_df.to_csv(P.exit_file, index=False, encoding="utf-8-sig")
 
 
-def append_daily_log(entry_df: pd.DataFrame, exit_df: pd.DataFrame, before_pos: pd.DataFrame, after_pos: pd.DataFrame) -> None:
+def save_diagnostics(diag_df: pd.DataFrame) -> None:
+    diag_df.to_csv(P.diagnostics_file, index=False, encoding="utf-8-sig")
+
+
+def append_daily_log(
+    entry_df: pd.DataFrame,
+    exit_df: pd.DataFrame,
+    before_pos: pd.DataFrame,
+    after_pos: pd.DataFrame
+) -> None:
     now = pd.Timestamp.now()
     today = now.normalize()
+
+    realized_pnl_yen = exit_df["pnl_yen"].sum() if not exit_df.empty else 0
+    realized_pnl_pct = exit_df["pnl_pct"].mean() if not exit_df.empty else 0
 
     log_row = {
         "run_timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
@@ -349,6 +508,8 @@ def append_daily_log(entry_df: pd.DataFrame, exit_df: pd.DataFrame, before_pos: 
         "positions_after": len(after_pos),
         "entry_tickers": ",".join(entry_df["ticker"].astype(str).tolist()) if not entry_df.empty else "",
         "exit_tickers": ",".join(exit_df["ticker"].astype(str).tolist()) if not exit_df.empty else "",
+        "realized_pnl_yen": round(realized_pnl_yen, 2),
+        "realized_pnl_pct": round(realized_pnl_pct, 5),
         "params_capital_yen": P.capital_yen,
         "params_ma_days": P.ma_days,
         "params_rsi_days": P.rsi_days,
@@ -416,7 +577,15 @@ def main() -> None:
     else:
         print(exit_df.to_string(index=False))
 
+    print_section("ENTRY DIAGNOSTICS")
+    diag_df = entry_diagnostics()
+    if diag_df.empty:
+        print("(no diagnostics)")
+    else:
+        print(diag_df.to_string(index=False))
+
     save_daily_csv(entry_df, exit_df)
+    save_diagnostics(diag_df)
 
     after_pos = apply_position_updates(before_pos, entry_df, exit_df)
     save_positions(after_pos)
@@ -433,7 +602,8 @@ def main() -> None:
     print(f"saved: {P.entry_file}")
     print(f"saved: {P.exit_file}")
     print(f"saved: {P.pos_file}")
-    print(f"appended: {P.log_file}")
+    print(f"saved: {P.log_file}")
+    print(f"saved: {P.diagnostics_file}")
 
 
 if __name__ == "__main__":

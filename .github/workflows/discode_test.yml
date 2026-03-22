@@ -1,0 +1,7 @@
+- name: Send result to Discord
+  env:
+    DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+  run: |
+    python - <<'PY'
+    # Pythonコード
+    PY
