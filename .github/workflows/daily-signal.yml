@@ -1,14 +1,16 @@
-name: Daily Signal
+name: Daily Signal v88
 
 on:
   workflow_dispatch:
   schedule:
-    # JST 07:05 = UTC 22:05 (previous day)
-    - cron: "5 22 * * 1-5"
+    # JST 07:17 = UTC 22:17 (previous day)
+    - cron: "17 22 * * 1-5"
 
 jobs:
   run:
     runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
     steps:
       - name: Checkout
@@ -31,7 +33,13 @@ jobs:
           fi
 
       - name: Run daily signal script
-        run: python v87_daily.py
+        run: python v88_daily_auto_position.py
+
+      - name: Ensure CSV files exist
+        run: |
+          [ -f today_entry.csv ] || echo "ticker,date,rsi,score" > today_entry.csv
+          [ -f today_exit.csv ] || echo "ticker,reason" > today_exit.csv
+          [ -f positions.csv ] || echo "ticker,entry_date" > positions.csv
 
       - name: Send result to Discord
         env:
@@ -42,71 +50,60 @@ jobs:
           import pandas as pd
           import requests
 
-          webhook = os.environ["DISCORD_WEBHOOK_URL"]
+          webhook = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
+          if not webhook:
+              print("DISCORD_WEBHOOK_URL is not set")
+              raise SystemExit(0)
 
           def read_csv_safe(path, columns):
               try:
-                  df = pd.read_csv(path)
-                  return df
+                  return pd.read_csv(path)
               except Exception:
                   return pd.DataFrame(columns=columns)
 
-          def pick_value(row, candidates, default=""):
-              for c in candidates:
-                  if c in row and pd.notna(row[c]):
-                      return row[c]
-              return default
-
           entry = read_csv_safe(
               "today_entry.csv",
-              ["ticker", "date", "signal_date", "rsi", "score"]
+              ["ticker", "date", "rsi", "score"]
           )
           exit_df = read_csv_safe(
               "today_exit.csv",
               ["ticker", "reason"]
           )
+          pos = read_csv_safe(
+              "positions.csv",
+              ["ticker", "entry_date"]
+          )
 
-          lines = []
-          lines.append("**Daily Signal Result**")
+          lines = ["**Daily Signal Result**", ""]
 
+          lines.append("**TODAY ENTRY**")
           if entry.empty:
-              lines.extend(["", "**TODAY ENTRY**", "- no entry"])
+              lines.append("- no entry")
           else:
-              lines.extend(["", "**TODAY ENTRY**"])
               for _, row in entry.iterrows():
-                  ticker = pick_value(row, ["ticker"], "")
-                  date_val = pick_value(row, ["date", "signal_date", "run_date"], "")
-                  rsi_val = pick_value(row, ["rsi"], "")
-                  score_val = pick_value(row, ["score"], "")
-
-                  try:
-                      rsi_text = f"{float(rsi_val):.2f}"
-                  except Exception:
-                      rsi_text = str(rsi_val)
-
-                  try:
-                      score_text = f"{float(score_val):.2f}"
-                  except Exception:
-                      score_text = str(score_val)
-
                   lines.append(
-                      f"- {ticker} | date={date_val} | rsi={rsi_text} | score={score_text}"
+                      f"- {row['ticker']} | date={row['date']} | rsi={float(row['rsi']):.2f}"
                   )
 
+          lines.append("")
+          lines.append("**TODAY EXIT**")
           if exit_df.empty:
-              lines.extend(["", "**TODAY EXIT**", "- no exit"])
+              lines.append("- no exit")
           else:
-              lines.extend(["", "**TODAY EXIT**"])
               for _, row in exit_df.iterrows():
-                  ticker = pick_value(row, ["ticker"], "")
-                  reason = pick_value(row, ["reason"], "")
-                  lines.append(f"- {ticker} | reason={reason}")
+                  lines.append(f"- {row['ticker']} | reason={row['reason']}")
 
-          content = "\n".join(lines)
+          lines.append("")
+          lines.append("**POSITIONS**")
+          if pos.empty:
+              lines.append("- empty")
+          else:
+              for _, row in pos.iterrows():
+                  lines.append(f"- {row['ticker']} | entry_date={row['entry_date']}")
 
           resp = requests.post(
               webhook,
-              json={"content": content},
+              json={"content": "\n".join(lines)},
               headers={"User-Agent": "Mozilla/5.0 GitHubActions DailySignal/1.0"},
               timeout=30,
           )
