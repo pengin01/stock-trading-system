@@ -14,7 +14,7 @@ import ta
 
 @dataclass
 class Params:
-    capital_yen: int = 80000
+    capital_yen: int = 30000
     max_positions_live: int = 1
     slippage_oneway: float = 0.001
 
