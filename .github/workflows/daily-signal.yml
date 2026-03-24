@@ -1,4 +1,4 @@
-name: Daily Signal v88
+name: Daily Signal v90
 
 on:
   workflow_dispatch:
@@ -36,7 +36,7 @@ jobs:
           fi
 
       - name: Run daily signal script
-        run: python daily.py
+        run: python daily_signal.py
 
       - name: Ensure CSV files exist
         run: |
