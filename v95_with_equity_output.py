@@ -19,6 +19,7 @@ PARAM_GRID = {
 
 STOCK_UNIVERSE = ["9432.T", "6758.T", "9984.T"]
 
+PERIOD = "1y"
 MA_DAYS = 25
 RSI_DAYS = 14
 RSI_MAX = 65
@@ -30,7 +31,7 @@ MAX_POSITIONS = 1
 # DATA
 # =========================
 def load_data(t):
-    df = yf.download(t, period="10y", progress=False)
+    df = yf.download(t, period=PERIOD, progress=False)
 
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)

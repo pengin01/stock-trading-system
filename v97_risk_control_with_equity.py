@@ -16,6 +16,7 @@ PARAM_GRID = {
 
 STOCK_UNIVERSE = ["9432.T", "6758.T", "9984.T"]
 
+PERIOD = "1y"
 MA_DAYS = 25
 RSI_DAYS = 14
 RSI_MAX = 65
@@ -26,7 +27,7 @@ RISK_RATIO = 0.7
 
 
 def load_data(ticker):
-    df = yf.download(ticker, period="10y", progress=False)
+    df = yf.download(ticker, period=PERIOD, progress=False)
 
     if df is None or df.empty:
         return pd.DataFrame()
