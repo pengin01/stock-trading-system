@@ -32,7 +32,7 @@ df97["normalized"] = df97["plot_equity"] / df97["plot_equity"].iloc[0]
 # --- グラフ ---
 plt.figure(figsize=(12, 6))
 plt.plot(df95["date"], df95["normalized"], label="v95 full")
-plt.plot(df97["date"], df97["normalized"], label="v97 70%")
+plt.plot(df97["date"], df97["normalized"], label="v97 80%")
 plt.title(f"v95 vs v97 Normalized Equity Curve (cap={TARGET_CAPITAL}, pb={TARGET_PULLBACK})")
 plt.xlabel("Date")
 plt.ylabel("Growth Multiple")

@@ -1,9 +1,9 @@
-name: Daily Signal v92
+name: Daily Signal v97
 
 on:
   workflow_dispatch:
   schedule:
-    # JST 07:17 = UTC 22:17
+    # JST 07:17 = UTC 22:17 (previous day)
     - cron: "17 22 * * 1-5"
 
 jobs:
@@ -31,76 +31,95 @@ jobs:
 
       - name: Prepare files
         run: |
-          [ -f positions.csv ] || echo "ticker,entry_date,entry_price,qty" > positions.csv
-          [ -f equity.csv ] || echo "timestamp,equity" > equity.csv
+          [ -f positions.csv ] || echo "ticker,entry_date,entry_price,qty,exit_date" > positions.csv
+          [ -f equity.csv ] || echo "date,equity" > equity.csv
           [ -f trades.csv ] || echo "ticker,entry_date,exit_date,entry_price,exit_price,qty,pnl,ret,reason" > trades.csv
-
-      - name: Run v92 system
-        run: python v92_unified_system.py
-
-      - name: Ensure CSV outputs exist
-        run: |
-          [ -f today_entry.csv ] || echo "ticker,signal_date,entry_price,qty,rsi,score" > today_entry.csv
+          [ -f today_entry.csv ] || echo "ticker,signal_date,entry_price,qty" > today_entry.csv
           [ -f today_exit.csv ] || echo "ticker,reason" > today_exit.csv
 
+      - name: Run v97 system
+        run: python v97_system.py
+
       - name: Send result to Discord
+        if: always()
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
           python - <<'PY'
-          import os, pandas as pd, requests
+          import os
+          import pandas as pd
+          import requests
 
           webhook = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
           if not webhook:
               print("Webhook not set")
               raise SystemExit(0)
 
-          def read(path):
+          def read_csv_safe(path):
               try:
-                  return pd.read_csv(path)
-              except:
+                  df = pd.read_csv(path)
+                  return df
+              except Exception as e:
+                  print(f"read error: {path}: {e}")
                   return pd.DataFrame()
 
-          entry = read("today_entry.csv")
-          exit_df = read("today_exit.csv")
-          pos = read("positions.csv")
-          eq = read("equity.csv")
+          entry = read_csv_safe("today_entry.csv")
+          exit_df = read_csv_safe("today_exit.csv")
+          pos = read_csv_safe("positions.csv")
+          eq = read_csv_safe("equity.csv")
 
           lines = []
-          lines.append("📊 **Daily Signal v92**")
+          lines.append("📊 **Daily Signal v97**")
 
           # ENTRY
-          lines.append("\n🟢 ENTRY")
+          lines.append("")
+          lines.append("🟢 ENTRY")
           if entry.empty:
               lines.append("- none")
           else:
               for _, r in entry.iterrows():
-                  lines.append(
-                      f"- {r['ticker']} | price={r['entry_price']:.1f} | qty={int(r['qty'])}"
-                  )
+                  ticker = r.get("ticker", "")
+                  price = r.get("entry_price", "")
+                  qty = r.get("qty", "")
+                  signal_date = r.get("signal_date", "")
+                  lines.append(f"- {ticker} | date={signal_date} | price={price} | qty={qty}")
 
           # EXIT
-          lines.append("\n🔴 EXIT")
+          lines.append("")
+          lines.append("🔴 EXIT")
           if exit_df.empty:
               lines.append("- none")
           else:
               for _, r in exit_df.iterrows():
-                  lines.append(f"- {r['ticker']} | {r['reason']}")
+                  ticker = r.get("ticker", "")
+                  reason = r.get("reason", "")
+                  lines.append(f"- {ticker} | {reason}")
 
           # POSITIONS
-          lines.append("\n📦 POSITIONS")
+          lines.append("")
+          lines.append("📦 POSITIONS")
           if pos.empty:
               lines.append("- empty")
           else:
               for _, r in pos.iterrows():
-                  lines.append(f"- {r['ticker']} | qty={int(r['qty'])}")
+                  ticker = r.get("ticker", "")
+                  qty = r.get("qty", "")
+                  exit_date = r.get("exit_date", "")
+                  lines.append(f"- {ticker} | qty={qty} | exit={exit_date}")
 
           # EQUITY
-          if not eq.empty:
-              latest = eq.iloc[-1]["equity"]
-              lines.append(f"\n💰 EQUITY: {int(latest)}")
+          lines.append("")
+          lines.append("💰 EQUITY")
+          if eq.empty:
+              lines.append("- unknown")
+          else:
+              latest = eq.iloc[-1]
+              lines.append(f"- {latest.get('equity', 'unknown')}")
 
           msg = "\n".join(lines)
+
+          if len(msg) > 1900:
+              msg = msg[:1900] + "\n...truncated"
 
           res = requests.post(webhook, json={"content": msg}, timeout=30)
           print("Discord:", res.status_code)
@@ -111,7 +130,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: v92-result
+          name: v97-result
           path: |
             today_entry.csv
             today_exit.csv
