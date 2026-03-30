@@ -79,16 +79,36 @@ def save_positions(df):
 def load_equity():
     if not os.path.exists(EQ_FILE):
         return INITIAL_CAPITAL
-    df = pd.read_csv(EQ_FILE)
-    return df["equity"].iloc[-1]
+
+    try:
+        df = pd.read_csv(EQ_FILE)
+    except Exception:
+        return INITIAL_CAPITAL
+
+    if df.empty:
+        return INITIAL_CAPITAL
+
+    if "equity" not in df.columns:
+        return INITIAL_CAPITAL
+
+    s = pd.to_numeric(df["equity"], errors="coerce").dropna()
+    if s.empty:
+        return INITIAL_CAPITAL
+
+    return float(s.iloc[-1])
 
 def save_equity(val):
     df = pd.DataFrame([{
         "date": pd.Timestamp.now(),
-        "equity": val
+        "equity": float(val)
     }])
+
     if os.path.exists(EQ_FILE):
-        df.to_csv(EQ_FILE, mode="a", header=False, index=False)
+        old = pd.read_csv(EQ_FILE)
+        if old.empty:
+            df.to_csv(EQ_FILE, index=False)
+        else:
+            df.to_csv(EQ_FILE, mode="a", header=False, index=False)
     else:
         df.to_csv(EQ_FILE, index=False)
 
