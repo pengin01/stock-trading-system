@@ -113,8 +113,17 @@ jobs:
           if eq.empty:
               lines.append("- unknown")
           else:
-              latest = eq.iloc[-1]
-              lines.append(f"- {latest.get('equity', 'unknown')}")
+            if not eq.empty:
+              latest = eq.iloc[-1]["equity"]
+          
+              if len(eq) >= 2:
+                  prev = eq.iloc[-2]["equity"]
+                  diff = latest - prev
+                  pct = diff / prev * 100 if prev != 0 else 0
+          
+                  lines.append(f"- {int(latest)} ({diff:+.0f} / {pct:+.2f}%)")
+              else:
+                  lines.append(f"- {int(latest)}")
 
           msg = "\n".join(lines)
 
