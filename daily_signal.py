@@ -1,4 +1,4 @@
-# v90_daily_position_sizing.py
+# daily_singnal.py
 # -*- coding: utf-8 -*-
 
 from dataclasses import dataclass
