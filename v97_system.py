@@ -69,9 +69,24 @@ def entry_signal(df, i):
 # FILE
 # =========================
 def load_positions():
+    cols = ["ticker", "entry_date", "entry_price", "qty", "exit_date"]
+
     if not os.path.exists(POS_FILE):
-        return pd.DataFrame(columns=["ticker","entry_date","entry_price","qty","exit_date"])
-    return pd.read_csv(POS_FILE, parse_dates=["entry_date","exit_date"])
+        return pd.DataFrame(columns=cols)
+
+    try:
+        df = pd.read_csv(POS_FILE, parse_dates=["entry_date", "exit_date"])
+    except Exception:
+        return pd.DataFrame(columns=cols)
+
+    if df.empty:
+        return pd.DataFrame(columns=cols)
+
+    for c in cols:
+        if c not in df.columns:
+            df[c] = pd.Series(dtype="object")
+
+    return df[cols]
 
 def save_positions(df):
     df.to_csv(POS_FILE, index=False)
@@ -153,8 +168,7 @@ def main():
             "reason": "time_exit"
         })
 
-    pos = pd.DataFrame(new_pos)
-
+    pos = pd.DataFrame(new_pos, columns=["ticker", "entry_date", "entry_price", "qty", "exit_date"])
     # =====================
     # ENTRY
     # =====================
