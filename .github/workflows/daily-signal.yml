@@ -27,7 +27,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas numpy yfinance ta requests
+          pip install pandas numpy yfinance ta requests matplotlib
 
       - name: Prepare files
         run: |
@@ -36,6 +36,8 @@ jobs:
           [ -f cashflow.csv ] || echo "date,amount,note" > cashflow.csv
           [ -f today_entry.csv ] || echo "ticker,signal_date,entry_price,qty,rsi,score" > today_entry.csv
           [ -f today_exit.csv ] || echo "ticker,reason" > today_exit.csv
+          [ -f candidate_rank.csv ] || echo "date,rank,ticker,close,prev_close,ma,rsi,value20,pullback_ratio,score" > candidate_rank.csv
+          [ -f nikkei225.csv ] || echo "ticker" > nikkei225.csv
 
       - name: Run v97 system
         run: python v97_system.py
@@ -66,6 +68,7 @@ jobs:
           pos = read_csv_safe("positions.csv")
           eq = read_csv_safe("equity.csv")
           cf = read_csv_safe("cashflow.csv")
+          cand = read_csv_safe("candidate_rank.csv")
 
           def prepare_equity(eq_df):
               if eq_df.empty or "date" not in eq_df.columns or "equity" not in eq_df.columns:
@@ -143,7 +146,9 @@ jobs:
                   ticker = r.get("ticker", "")
                   price = r.get("entry_price", "")
                   qty = int(r.get("qty", 0))
-                  lines.append(f"- {ticker} | price={price} | qty={qty}")
+                  rsi = r.get("rsi", "")
+                  score = r.get("score", "")
+                  lines.append(f"- {ticker} | price={price} | qty={qty} | RSI={rsi} | score={score}")
 
           lines.append("")
           lines.append("🔴 EXIT")
@@ -165,6 +170,19 @@ jobs:
                   qty = int(r.get("qty", 0))
                   exit_date = r.get("exit_date", "")
                   lines.append(f"- {ticker} | qty={qty} | exit={exit_date}")
+
+          lines.append("")
+          lines.append("📋 CANDIDATES")
+          if cand.empty:
+              lines.append("- none")
+          else:
+              top3 = cand.head(3)
+              for _, r in top3.iterrows():
+                  ticker = r.get("ticker", "")
+                  rsi = r.get("rsi", "")
+                  pb = r.get("pullback_ratio", "")
+                  score = r.get("score", "")
+                  lines.append(f"- {ticker} | RSI={rsi} | pullback={pb} | score={score}")
 
           lines.append("")
           lines.append("💰 EQUITY")
@@ -222,6 +240,26 @@ jobs:
               lines.append("💹 PNL")
               lines.append(f"- {pnl:+.0f} ({pnl_pct:+.2f}%)")
 
+              # DD / NEW HIGH
+              eq2["peak"] = eq2["equity"].cummax()
+              eq2["dd"] = eq2["equity"] / eq2["peak"] - 1.0
+
+              current_dd = float(eq2["dd"].iloc[-1])
+              max_equity = float(eq2["equity"].max())
+              latest_equity = float(eq2["equity"].iloc[-1])
+
+              if current_dd <= -0.10:
+                  lines.append("")
+                  lines.append("⚠️ DRAWDOWN ALERT")
+                  lines.append(f"- {current_dd:.2%}")
+
+              if latest_equity >= max_equity and len(eq2) >= 2:
+                  prev_max = float(eq2["equity"].iloc[:-1].max())
+                  if latest_equity > prev_max:
+                      lines.append("")
+                      lines.append("🚀 NEW HIGH")
+                      lines.append(f"- {int(latest_equity)}")
+
           msg = "\n".join(lines)
 
           if len(msg) > 1900:
@@ -243,4 +281,6 @@ jobs:
             positions.csv
             equity.csv
             cashflow.csv
+            candidate_rank.csv
+            nikkei225.csv
           if-no-files-found: warn
