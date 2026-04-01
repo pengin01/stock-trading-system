@@ -7,7 +7,7 @@ import yfinance as yf
 import ta
 
 # =========================
-# PARAMETERS（v97一致）
+# PARAMETERS
 # =========================
 INITIAL_CAPITAL = 20000
 HOLD_DAYS = 4
@@ -21,15 +21,41 @@ RSI_DAYS = 14
 RSI_MAX = 65
 MIN_VALUE = 300_000_000
 
-STOCK_UNIVERSE = ["9432.T", "6758.T", "9984.T"]
+UNIVERSE_FILE = "nikkei225.csv"
 
 POS_FILE = "positions.csv"
 EQ_FILE = "equity.csv"
 CASHFLOW_FILE = "cashflow.csv"
 ENTRY_FILE = "today_entry.csv"
 EXIT_FILE = "today_exit.csv"
+CANDIDATE_FILE = "candidate_rank.csv"
 
 POS_COLUMNS = ["ticker", "entry_date", "entry_price", "qty", "exit_date"]
+
+
+# =========================
+# UNIVERSE
+# =========================
+def load_universe() -> list[str]:
+    if not os.path.exists(UNIVERSE_FILE):
+        return []
+
+    try:
+        df = pd.read_csv(UNIVERSE_FILE)
+    except Exception:
+        return []
+
+    if "ticker" not in df.columns:
+        return []
+
+    tickers = (
+        df["ticker"]
+        .dropna()
+        .astype(str)
+        .str.strip()
+        .tolist()
+    )
+    return [t for t in tickers if t]
 
 
 # =========================
@@ -88,6 +114,12 @@ def ensure_files():
 
     if not os.path.exists(EXIT_FILE):
         pd.DataFrame(columns=["ticker", "reason"]).to_csv(EXIT_FILE, index=False)
+
+    if not os.path.exists(CANDIDATE_FILE):
+        pd.DataFrame(columns=[
+            "date", "rank", "ticker", "close", "prev_close",
+            "ma", "rsi", "value20", "pullback_ratio", "score"
+        ]).to_csv(CANDIDATE_FILE, index=False)
 
 
 def load_positions() -> pd.DataFrame:
@@ -175,7 +207,6 @@ def load_cashflow_df() -> pd.DataFrame:
         df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.normalize()
     if "amount" in df.columns:
         df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
-
     if "note" not in df.columns:
         df["note"] = ""
 
@@ -219,10 +250,6 @@ def get_latest_equity_value() -> float | None:
 
 
 def calc_starting_cash_for_today(today: pd.Timestamp) -> float:
-    """
-    当日の運用開始cashを決める。
-    基本は前回equityを引き継ぎつつ、当日までのcashflow差分を加える。
-    """
     total_cashflow = get_total_cashflow_until(today)
     latest_equity = get_latest_equity_value()
 
@@ -245,6 +272,120 @@ def calc_starting_cash_for_today(today: pd.Timestamp) -> float:
 
 
 # =========================
+# CANDIDATES + DIAGNOSTICS
+# =========================
+def build_candidates_with_diagnostics(today: pd.Timestamp, pos: pd.DataFrame, data_cache: dict[str, pd.DataFrame]):
+    candidates = []
+    stats = {
+        "total": 0,
+        "has_data": 0,
+        "not_held": 0,
+        "tradable_today": 0,
+        "enough_history": 0,
+        "enough_exit_room": 0,
+        "ma_fail": 0,
+        "pullback_fail": 0,
+        "rsi_fail": 0,
+        "value20_fail": 0,
+        "passed": 0,
+    }
+
+    for t, df in data_cache.items():
+        stats["total"] += 1
+
+        if df.empty:
+            continue
+        stats["has_data"] += 1
+
+        if "ticker" in pos.columns and t in pos["ticker"].values:
+            continue
+        stats["not_held"] += 1
+
+        if today not in df.index:
+            continue
+        stats["tradable_today"] += 1
+
+        i = df.index.get_loc(today)
+
+        if i < MA_DAYS + 2:
+            continue
+        stats["enough_history"] += 1
+
+        if i + HOLD_DAYS >= len(df):
+            continue
+        stats["enough_exit_room"] += 1
+
+        close = float(df["Close"].iloc[i])
+        prev_close = float(df["Close"].iloc[i - 1])
+        ma = float(df["MA"].iloc[i])
+        rsi = float(df["RSI"].iloc[i])
+        value20 = float(df["VALUE20"].iloc[i])
+        pullback_ratio = close / prev_close - 1.0
+
+        failed = False
+
+        if close < ma:
+            stats["ma_fail"] += 1
+            failed = True
+
+        if close > prev_close * (1 - PULLBACK):
+            stats["pullback_fail"] += 1
+            failed = True
+
+        if rsi > RSI_MAX:
+            stats["rsi_fail"] += 1
+            failed = True
+
+        if value20 < MIN_VALUE:
+            stats["value20_fail"] += 1
+            failed = True
+
+        if failed:
+            continue
+
+        score = -rsi
+        stats["passed"] += 1
+
+        candidates.append({
+            "ticker": t,
+            "close": close,
+            "prev_close": prev_close,
+            "ma": ma,
+            "rsi": rsi,
+            "value20": value20,
+            "pullback_ratio": pullback_ratio,
+            "score": score,
+            "i": i,
+        })
+
+    candidates.sort(key=lambda x: x["score"])
+    return candidates, stats
+
+
+def save_candidate_rank(today: pd.Timestamp, candidates: list[dict]):
+    rows = []
+    for rank, c in enumerate(candidates, start=1):
+        rows.append({
+            "date": today.strftime("%Y-%m-%d"),
+            "rank": rank,
+            "ticker": c["ticker"],
+            "close": c["close"],
+            "prev_close": c["prev_close"],
+            "ma": c["ma"],
+            "rsi": c["rsi"],
+            "value20": c["value20"],
+            "pullback_ratio": c["pullback_ratio"],
+            "score": c["score"],
+        })
+
+    df = pd.DataFrame(rows, columns=[
+        "date", "rank", "ticker", "close", "prev_close",
+        "ma", "rsi", "value20", "pullback_ratio", "score"
+    ])
+    df.to_csv(CANDIDATE_FILE, index=False)
+
+
+# =========================
 # MAIN
 # =========================
 def main():
@@ -255,17 +396,20 @@ def main():
     today = pd.Timestamp.now().normalize()
     ensure_initial_cashflow(today)
 
+    universe = load_universe()
+    if not universe:
+        raise RuntimeError("nikkei225.csv is empty or missing ticker column")
+
     pos = load_positions()
     cash = calc_starting_cash_for_today(today)
 
     entries = []
     exits = []
 
-    data_cache = {t: load_data(t) for t in STOCK_UNIVERSE}
+    print("Universe size:", len(universe))
+    data_cache = {t: load_data(t) for t in universe}
 
-    # =====================
-    # EXIT（時間決済）
-    # =====================
+    # EXIT
     new_pos = []
 
     for _, p in pos.iterrows():
@@ -290,70 +434,45 @@ def main():
 
     pos = pd.DataFrame(new_pos, columns=POS_COLUMNS)
 
-    # =====================
     # ENTRY
-    # =====================
-    if len(pos) < MAX_POSITIONS:
-        candidates = []
+    candidates, filter_stats = build_candidates_with_diagnostics(today, pos, data_cache)
+    save_candidate_rank(today, candidates)
 
-        for t, df in data_cache.items():
-            if df.empty:
-                continue
+    if len(pos) < MAX_POSITIONS and candidates:
+        c = candidates[0]
+        t = c["ticker"]
+        i = c["i"]
 
-            if "ticker" in pos.columns and t in pos["ticker"].values:
-                continue
+        df = data_cache[t]
+        price = float(df["Close"].iloc[i])
 
-            if today not in df.index:
-                continue
+        usable_cash = cash * RISK_RATIO
+        qty = int(usable_cash // price)
 
-            i = df.index.get_loc(today)
+        if qty > 0:
+            cost = price * qty
+            cash -= cost
 
-            if i < MA_DAYS + 2:
-                continue
-            if i + HOLD_DAYS >= len(df):
-                continue
-            if not entry_signal(df, i):
-                continue
+            new_pos_row = {
+                "ticker": t,
+                "entry_date": today,
+                "entry_price": price,
+                "qty": qty,
+                "exit_date": df.index[i + HOLD_DAYS].normalize(),
+            }
 
-            score = -float(df["RSI"].iloc[i])
-            candidates.append((score, t, i))
+            pos = pd.concat([pos, pd.DataFrame([new_pos_row])], ignore_index=True)
 
-        if candidates:
-            candidates.sort()
-            score, t, i = candidates[0]
+            entries.append({
+                "ticker": t,
+                "signal_date": today.strftime("%Y-%m-%d"),
+                "entry_price": price,
+                "qty": qty,
+                "rsi": c["rsi"],
+                "score": c["score"],
+            })
 
-            df = data_cache[t]
-            price = float(df["Close"].iloc[i])
-
-            usable_cash = cash * RISK_RATIO
-            qty = int(usable_cash // price)
-
-            if qty > 0:
-                cost = price * qty
-                cash -= cost
-
-                new_pos_row = {
-                    "ticker": t,
-                    "entry_date": today,
-                    "entry_price": price,
-                    "qty": qty,
-                    "exit_date": df.index[i + HOLD_DAYS].normalize(),
-                }
-
-                pos = pd.concat([pos, pd.DataFrame([new_pos_row])], ignore_index=True)
-
-                entries.append({
-                    "ticker": t,
-                    "signal_date": today.strftime("%Y-%m-%d"),
-                    "entry_price": price,
-                    "qty": qty,
-                    "rsi": float(df["RSI"].iloc[i]),
-                    "score": score,
-                })
-
-    # =====================
     # EQUITY
-    # =====================
     position_value = 0.0
 
     for _, p in pos.iterrows():
@@ -371,9 +490,7 @@ def main():
     total_cashflow = get_total_cashflow_until(today)
     pnl = equity - total_cashflow
 
-    # =====================
     # SAVE
-    # =====================
     save_positions(pos)
     save_equity(equity, cash, position_value)
 
@@ -384,14 +501,22 @@ def main():
         EXIT_FILE, index=False
     )
 
-    # =====================
     # LOG
-    # =====================
     print("== ENTRY ==")
     print(pd.DataFrame(entries) if entries else "(none)")
 
     print("\n== EXIT ==")
     print(pd.DataFrame(exits) if exits else "(none)")
+
+    print("\n== TOP CANDIDATES ==")
+    if candidates:
+        print(pd.DataFrame(candidates)[["ticker", "rsi", "pullback_ratio", "score"]].head(10).to_string(index=False))
+    else:
+        print("(none)")
+
+    print("\n== FILTER SUMMARY ==")
+    for k, v in filter_stats.items():
+        print(f"{k}: {v}")
 
     print("\n== CASHFLOW ==")
     print(total_cashflow)
