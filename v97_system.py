@@ -311,7 +311,6 @@ def build_candidates_with_diagnostics(
         "not_held": 0,
         "tradable_today": 0,
         "enough_history": 0,
-        "enough_exit_room": 0,
         "ma_fail": 0,
         "pullback_fail": 0,
         "rsi_fail": 0,
@@ -339,10 +338,6 @@ def build_candidates_with_diagnostics(
         if i < MA_DAYS + 2:
             continue
         stats["enough_history"] += 1
-
-        if i + HOLD_DAYS >= len(df):
-            continue
-        stats["enough_exit_room"] += 1
 
         close = float(df["Close"].iloc[i])
         prev_close = float(df["Close"].iloc[i - 1])
@@ -430,6 +425,19 @@ def save_candidate_rank(signal_date: pd.Timestamp, candidates: list[dict]):
 
 
 # =========================
+# HOLDING DAYS
+# =========================
+def calc_bars_passed(
+    df: pd.DataFrame, entry_date: pd.Timestamp, signal_date: pd.Timestamp
+) -> int:
+    """
+    entry_date の翌営業日から signal_date までに何本日足が進んだか
+    """
+    mask = (df.index > entry_date) & (df.index <= signal_date)
+    return int(mask.sum())
+
+
+# =========================
 # MAIN
 # =========================
 def main():
@@ -460,18 +468,22 @@ def main():
     entries = []
     exits = []
 
+    # =====================
     # EXIT
+    # =====================
     new_pos = []
 
     for _, p in pos.iterrows():
-        exit_date = pd.to_datetime(p["exit_date"]).normalize()
-
-        if signal_date < exit_date:
-            new_pos.append(p.to_dict())
-            continue
+        entry_date = pd.to_datetime(p["entry_date"]).normalize()
 
         df = data_cache.get(p["ticker"], pd.DataFrame())
         if df.empty or signal_date not in df.index:
+            new_pos.append(p.to_dict())
+            continue
+
+        bars_passed = calc_bars_passed(df, entry_date, signal_date)
+
+        if bars_passed < HOLD_DAYS:
             new_pos.append(p.to_dict())
             continue
 
@@ -487,7 +499,9 @@ def main():
 
     pos = pd.DataFrame(new_pos, columns=POS_COLUMNS)
 
+    # =====================
     # ENTRY
+    # =====================
     candidates, filter_stats = build_candidates_with_diagnostics(
         signal_date, pos, data_cache
     )
@@ -513,7 +527,7 @@ def main():
                 "entry_date": signal_date,
                 "entry_price": price,
                 "qty": qty,
-                "exit_date": df.index[i + HOLD_DAYS].normalize(),
+                "exit_date": pd.NaT,  # 実運用では未使用、互換性のため残す
             }
 
             pos = pd.concat([pos, pd.DataFrame([new_pos_row])], ignore_index=True)
@@ -529,7 +543,9 @@ def main():
                 }
             )
 
+    # =====================
     # EQUITY
+    # =====================
     position_value = 0.0
 
     for _, p in pos.iterrows():
@@ -547,16 +563,21 @@ def main():
     total_cashflow = get_total_cashflow_until(signal_date)
     pnl = equity - total_cashflow
 
+    # =====================
     # SAVE
+    # =====================
     save_positions(pos)
     save_equity(equity, cash, position_value)
 
     pd.DataFrame(
         entries, columns=["ticker", "signal_date", "entry_price", "qty", "rsi", "score"]
     ).to_csv(ENTRY_FILE, index=False)
+
     pd.DataFrame(exits, columns=["ticker", "reason"]).to_csv(EXIT_FILE, index=False)
 
+    # =====================
     # LOG
+    # =====================
     print("== ENTRY ==")
     print(pd.DataFrame(entries) if entries else "(none)")
 
