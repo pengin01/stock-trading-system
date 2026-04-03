@@ -17,7 +17,7 @@ PARAM_GRID = {
 UNIVERSE_FILE = "nikkei225.csv"
 
 
-PERID="10y"
+PERID = "1y"
 MA_DAYS = 25
 RSI_DAYS = 14
 RSI_MAX = 65
@@ -40,13 +40,7 @@ def load_universe() -> list[str]:
     if "ticker" not in df.columns:
         return []
 
-    return (
-        df["ticker"]
-        .dropna()
-        .astype(str)
-        .str.strip()
-        .tolist()
-    )
+    return df["ticker"].dropna().astype(str).str.strip().tolist()
 
 
 # =========================
@@ -122,12 +116,14 @@ def build_candidates_for_date(date, pos, data, hold_days, pullback):
         rsi = float(df["RSI"].iloc[i])
         score = -rsi
 
-        candidates.append({
-            "ticker": ticker,
-            "i": i,
-            "score": score,
-            "rsi": rsi,
-        })
+        candidates.append(
+            {
+                "ticker": ticker,
+                "i": i,
+                "score": score,
+                "rsi": rsi,
+            }
+        )
 
     candidates.sort(key=lambda x: x["score"])
     return candidates
@@ -182,7 +178,9 @@ def backtest(params, data):
         # ENTRY
         if len(positions) < MAX_POSITIONS:
             held_tickers = {p["ticker"] for p in positions}
-            candidates = build_candidates_for_date(date, held_tickers, data, hold_days, pullback)
+            candidates = build_candidates_for_date(
+                date, held_tickers, data, hold_days, pullback
+            )
             passed_candidates_total += len(candidates)
 
             if candidates:
@@ -200,12 +198,14 @@ def backtest(params, data):
                     cost = price * qty
                     cash -= cost
 
-                    positions.append({
-                        "ticker": ticker,
-                        "entry_price": price,
-                        "qty": qty,
-                        "exit": df.index[i + hold_days],
-                    })
+                    positions.append(
+                        {
+                            "ticker": ticker,
+                            "entry_price": price,
+                            "qty": qty,
+                            "exit": df.index[i + hold_days],
+                        }
+                    )
 
         # EQUITY
         mtm = 0.0
@@ -223,10 +223,12 @@ def backtest(params, data):
 
             mtm += px * p["qty"]
 
-        equity_curve.append({
-            "date": date,
-            "equity": cash + mtm,
-        })
+        equity_curve.append(
+            {
+                "date": date,
+                "equity": cash + mtm,
+            }
+        )
 
     eq = pd.DataFrame(equity_curve)
 
@@ -242,6 +244,12 @@ def backtest(params, data):
     trades_n = len(trades)
     win_rate = float(sum(r > 0 for r in trades) / trades_n) if trades_n > 0 else 0.0
     avg_return = float(sum(trades) / trades_n) if trades_n > 0 else 0.0
+
+    # === SAVE EQUITY CURVE ===
+    eq.to_csv(
+        f"equity_curve_v97_cap{params['initial_capital']}_pb{params['pullback_pct']}.csv",
+        index=False,
+    )
 
     return {
         "final_capital": final_capital,
