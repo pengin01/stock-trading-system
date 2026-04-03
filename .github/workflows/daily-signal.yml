@@ -96,13 +96,60 @@ jobs:
               x = cand_df.copy()
               if "date" in x.columns:
                   x["date"] = pd.to_datetime(x["date"], errors="coerce")
+              for c in ["rank", "close", "prev_close", "ma", "rsi", "value20", "pullback_ratio", "score"]:
+                  if c in x.columns:
+                      x[c] = pd.to_numeric(x[c], errors="coerce")
+              x = x.sort_values(["date", "rank"], ascending=[False, True]).reset_index(drop=True)
               return x
+
+          def calc_change_from_date(eq_df, target_date):
+              if eq_df.empty:
+                  return None
+              latest_equity = float(eq_df["equity"].iloc[-1])
+              past = eq_df[eq_df["date"] <= target_date]
+              if past.empty:
+                  base_equity = float(eq_df["equity"].iloc[0])
+              else:
+                  base_equity = float(past["equity"].iloc[-1])
+              diff = latest_equity - base_equity
+              pct = diff / base_equity * 100 if base_equity != 0 else 0.0
+              return diff, pct
+
+          def calc_week_change(eq_df):
+              if eq_df.empty:
+                  return None
+              latest_date = eq_df["date"].iloc[-1]
+              target_date = latest_date - pd.Timedelta(days=7)
+              return calc_change_from_date(eq_df, target_date)
+
+          def calc_month_change(eq_df):
+              if eq_df.empty:
+                  return None
+              latest_date = eq_df["date"].iloc[-1]
+              month_start = latest_date.replace(day=1)
+              return calc_change_from_date(eq_df, month_start)
+
+          def calc_total_change(eq_df):
+              if eq_df.empty:
+                  return None
+              latest_equity = float(eq_df["equity"].iloc[-1])
+              initial_equity = float(eq_df["equity"].iloc[0])
+              diff = latest_equity - initial_equity
+              pct = diff / initial_equity * 100 if initial_equity != 0 else 0.0
+              return diff, pct
+
+          def calc_total_cashflow(cf_df, latest_date):
+              if cf_df.empty:
+                  return 0.0
+              x = cf_df[cf_df["date"] <= latest_date]
+              if x.empty:
+                  return 0.0
+              return float(x["amount"].sum())
 
           eq2 = prepare_equity(eq)
           cf2 = prepare_cashflow(cf)
           cand2 = prepare_candidates(cand)
 
-          # signal_date 推定
           signal_date = None
           if not entry.empty and "signal_date" in entry.columns:
               s = pd.to_datetime(entry["signal_date"], errors="coerce").dropna()
@@ -119,9 +166,6 @@ jobs:
           lines = []
           lines.append("📊 **Daily Signal v97**")
 
-          # =========================
-          # RUN INFO
-          # =========================
           lines.append("")
           lines.append("🗓 RUN INFO")
           lines.append(f"- run_date: {run_date.strftime('%Y-%m-%d')}")
@@ -130,60 +174,64 @@ jobs:
           else:
               lines.append("- signal_date: unknown")
 
-          # =========================
-          # ENTRY
-          # =========================
           lines.append("")
           lines.append("🟢 ENTRY")
           if entry.empty:
               lines.append("- none")
           else:
               for _, r in entry.iterrows():
-                  lines.append(
-                      f"- {r['ticker']} | signal={r.get('signal_date','')} | price={r.get('entry_price','')} | qty={int(r.get('qty',0))}"
-                  )
+                  ticker = r.get("ticker", "")
+                  sig = r.get("signal_date", "")
+                  price = r.get("entry_price", "")
+                  qty = int(r.get("qty", 0))
+                  rsi = r.get("rsi", "")
+                  score = r.get("score", "")
+                  lines.append(f"- {ticker} | signal={sig} | price={price} | qty={qty} | RSI={rsi} | score={score}")
 
-          # =========================
-          # EXIT
-          # =========================
           lines.append("")
           lines.append("🔴 EXIT")
           if exit_df.empty:
               lines.append("- none")
           else:
               for _, r in exit_df.iterrows():
-                  lines.append(f"- {r['ticker']} | {r.get('reason','')}")
+                  ticker = r.get("ticker", "")
+                  reason = r.get("reason", "")
+                  lines.append(f"- {ticker} | {reason}")
 
-          # =========================
-          # POSITIONS
-          # =========================
           lines.append("")
           lines.append("📦 POSITIONS")
           if pos.empty:
               lines.append("- empty")
           else:
               for _, r in pos.iterrows():
-                  lines.append(
-                      f"- {r.get('ticker','')} | qty={int(r.get('qty',0))} | exit={r.get('exit_date','')}"
-                  )
+                  ticker = r.get("ticker", "")
+                  qty = int(r.get("qty", 0))
+                  entry_date = r.get("entry_date", "")
+                  lines.append(f"- {ticker} | qty={qty} | entry={entry_date}")
 
-          # =========================
-          # CANDIDATES
-          # =========================
           lines.append("")
           lines.append("📋 CANDIDATES")
           if cand2.empty:
               lines.append("- none")
           else:
-              top3 = cand2.sort_values("rank").head(3)
+              top3 = cand2.head(3)
               for _, r in top3.iterrows():
-                  lines.append(
-                      f"- #{int(r.get('rank',0))} {r.get('ticker','')} | RSI={r.get('rsi','')} | pullback={r.get('pullback_ratio','')}"
-                  )
+                  ticker = r.get("ticker", "")
+                  rank = int(r.get("rank", 0)) if pd.notna(r.get("rank", 0)) else ""
+                  cdate = r.get("date", "")
+                  if pd.notna(cdate):
+                      cdate = pd.to_datetime(cdate).strftime("%Y-%m-%d")
+                  rsi = r.get("rsi", None)
+                  pb = r.get("pullback_ratio", None)
+                  score = r.get("score", None)
 
-          # =========================
-          # EQUITY
-          # =========================
+                  if pd.notna(rsi) and pd.notna(pb) and pd.notna(score):
+                      lines.append(
+                          f"- #{rank} {ticker} | date={cdate} | RSI={rsi:.2f} | pullback={pb:.2%} | score={score:.2f}"
+                      )
+                  else:
+                      lines.append(f"- #{rank} {ticker}")
+
           lines.append("")
           lines.append("💰 EQUITY")
 
@@ -191,23 +239,74 @@ jobs:
               lines.append("- unknown")
           else:
               latest = float(eq2["equity"].iloc[-1])
-              lines.append(f"- {int(latest)}")
+              latest_date = eq2["date"].iloc[-1]
 
-              # TOTAL
-              initial = float(eq2["equity"].iloc[0])
-              diff = latest - initial
-              pct = diff / initial * 100 if initial != 0 else 0
+              if len(eq2) >= 2:
+                  prev = float(eq2["equity"].iloc[-2])
+                  diff = latest - prev
+                  pct = diff / prev * 100 if prev != 0 else 0.0
+                  lines.append(f"- {int(latest)} ({diff:+.0f} / {pct:+.2f}%)")
+              else:
+                  lines.append(f"- {int(latest)}")
 
+              week = calc_week_change(eq2)
+              lines.append("")
+              lines.append("📅 WEEK")
+              if week is None:
+                  lines.append("- unknown")
+              else:
+                  lines.append(f"- {week[0]:+.0f} ({week[1]:+.2f}%)")
+
+              month = calc_month_change(eq2)
+              lines.append("")
+              lines.append("🗓 MONTH")
+              if month is None:
+                  lines.append("- unknown")
+              else:
+                  lines.append(f"- {month[0]:+.0f} ({month[1]:+.2f}%)")
+
+              total = calc_total_change(eq2)
               lines.append("")
               lines.append("📈 TOTAL")
-              lines.append(f"- {diff:+.0f} ({pct:+.2f}%)")
+              if total is None:
+                  lines.append("- unknown")
+              else:
+                  lines.append(f"- {total[0]:+.0f} ({total[1]:+.2f}%)")
 
-          # =========================
-          # NOTE
-          # =========================
+              total_cashflow = calc_total_cashflow(cf2, latest_date)
+              pnl = latest - total_cashflow
+              pnl_pct = pnl / total_cashflow * 100 if total_cashflow != 0 else 0.0
+
+              lines.append("")
+              lines.append("🏦 CASHFLOW")
+              lines.append(f"- {total_cashflow:+.0f}")
+
+              lines.append("")
+              lines.append("💹 PNL")
+              lines.append(f"- {pnl:+.0f} ({pnl_pct:+.2f}%)")
+
+              eq2["peak"] = eq2["equity"].cummax()
+              eq2["dd"] = eq2["equity"] / eq2["peak"] - 1.0
+
+              current_dd = float(eq2["dd"].iloc[-1])
+              max_equity = float(eq2["equity"].max())
+              latest_equity = float(eq2["equity"].iloc[-1])
+
+              if current_dd <= -0.10:
+                  lines.append("")
+                  lines.append("⚠️ DRAWDOWN ALERT")
+                  lines.append(f"- {current_dd:.2%}")
+
+              if latest_equity >= max_equity and len(eq2) >= 2:
+                  prev_max = float(eq2["equity"].iloc[:-1].max())
+                  if latest_equity > prev_max:
+                      lines.append("")
+                      lines.append("🚀 NEW HIGH")
+                      lines.append(f"- {int(latest_equity)}")
+
           lines.append("")
           lines.append("ℹ️ NOTE")
-          lines.append("- signal_date = latest market data")
+          lines.append("- signal_date = latest available market data")
           lines.append("- morning run uses previous trading day")
 
           msg = "\n".join(lines)
