@@ -21,7 +21,7 @@ RSI_DAYS = 14
 RSI_MAX = 65
 MIN_VALUE = 300_000_000
 
-UNIVERSE_FILE = "nikkei225.csv"
+UNIVERSE_FILE = "etf_universe.csv"
 
 POS_FILE = "positions.csv"
 EQ_FILE = "equity.csv"
@@ -48,13 +48,7 @@ def load_universe() -> list[str]:
     if "ticker" not in df.columns:
         return []
 
-    tickers = (
-        df["ticker"]
-        .dropna()
-        .astype(str)
-        .str.strip()
-        .tolist()
-    )
+    tickers = df["ticker"].dropna().astype(str).str.strip().tolist()
     return [t for t in tickers if t]
 
 
@@ -140,22 +134,38 @@ def ensure_files():
         pd.DataFrame(columns=POS_COLUMNS).to_csv(POS_FILE, index=False)
 
     if not os.path.exists(EQ_FILE):
-        pd.DataFrame(columns=["date", "equity", "cash", "position_value"]).to_csv(EQ_FILE, index=False)
+        pd.DataFrame(columns=["date", "equity", "cash", "position_value"]).to_csv(
+            EQ_FILE, index=False
+        )
 
     if not os.path.exists(CASHFLOW_FILE):
-        pd.DataFrame(columns=["date", "amount", "note"]).to_csv(CASHFLOW_FILE, index=False)
+        pd.DataFrame(columns=["date", "amount", "note"]).to_csv(
+            CASHFLOW_FILE, index=False
+        )
 
     if not os.path.exists(ENTRY_FILE):
-        pd.DataFrame(columns=["ticker", "signal_date", "entry_price", "qty", "rsi", "score"]).to_csv(ENTRY_FILE, index=False)
+        pd.DataFrame(
+            columns=["ticker", "signal_date", "entry_price", "qty", "rsi", "score"]
+        ).to_csv(ENTRY_FILE, index=False)
 
     if not os.path.exists(EXIT_FILE):
         pd.DataFrame(columns=["ticker", "reason"]).to_csv(EXIT_FILE, index=False)
 
     if not os.path.exists(CANDIDATE_FILE):
-        pd.DataFrame(columns=[
-            "date", "rank", "ticker", "close", "prev_close",
-            "ma", "rsi", "value20", "pullback_ratio", "score"
-        ]).to_csv(CANDIDATE_FILE, index=False)
+        pd.DataFrame(
+            columns=[
+                "date",
+                "rank",
+                "ticker",
+                "close",
+                "prev_close",
+                "ma",
+                "rsi",
+                "value20",
+                "pullback_ratio",
+                "score",
+            ]
+        ).to_csv(CANDIDATE_FILE, index=False)
 
 
 def load_positions() -> pd.DataFrame:
@@ -213,12 +223,16 @@ def load_equity_df() -> pd.DataFrame:
 
 
 def save_equity(equity_value: float, cash_value: float, position_value: float):
-    row = pd.DataFrame([{
-        "date": pd.Timestamp.now(),
-        "equity": float(equity_value),
-        "cash": float(cash_value),
-        "position_value": float(position_value),
-    }])
+    row = pd.DataFrame(
+        [
+            {
+                "date": pd.Timestamp.now(),
+                "equity": float(equity_value),
+                "cash": float(cash_value),
+                "position_value": float(position_value),
+            }
+        ]
+    )
 
     old = load_equity_df()
     if old.empty:
@@ -253,11 +267,9 @@ def load_cashflow_df() -> pd.DataFrame:
 def ensure_initial_cashflow(today: pd.Timestamp):
     cf = load_cashflow_df()
     if cf.empty:
-        init_row = pd.DataFrame([{
-            "date": today,
-            "amount": float(INITIAL_CAPITAL),
-            "note": "initial"
-        }])
+        init_row = pd.DataFrame(
+            [{"date": today, "amount": float(INITIAL_CAPITAL), "note": "initial"}]
+        )
         init_row.to_csv(CASHFLOW_FILE, index=False)
 
 
@@ -311,7 +323,9 @@ def calc_starting_cash_for_signal_date(signal_date: pd.Timestamp) -> float:
 # =========================
 # HOLD DAYS
 # =========================
-def calc_bars_passed(df: pd.DataFrame, entry_date: pd.Timestamp, signal_date: pd.Timestamp) -> int:
+def calc_bars_passed(
+    df: pd.DataFrame, entry_date: pd.Timestamp, signal_date: pd.Timestamp
+) -> int:
     mask = (df.index > entry_date) & (df.index <= signal_date)
     return int(mask.sum())
 
@@ -319,7 +333,9 @@ def calc_bars_passed(df: pd.DataFrame, entry_date: pd.Timestamp, signal_date: pd
 # =========================
 # CANDIDATES
 # =========================
-def build_candidates_with_diagnostics(signal_date: pd.Timestamp, pos: pd.DataFrame, data_cache: dict[str, pd.DataFrame]):
+def build_candidates_with_diagnostics(
+    signal_date: pd.Timestamp, pos: pd.DataFrame, data_cache: dict[str, pd.DataFrame]
+):
     candidates = []
     stats = {
         "total": 0,
@@ -334,7 +350,11 @@ def build_candidates_with_diagnostics(signal_date: pd.Timestamp, pos: pd.DataFra
         "passed": 0,
     }
 
-    held = set(pos["ticker"].values) if ("ticker" in pos.columns and not pos.empty) else set()
+    held = (
+        set(pos["ticker"].values)
+        if ("ticker" in pos.columns and not pos.empty)
+        else set()
+    )
 
     for t, df in data_cache.items():
         stats["total"] += 1
@@ -388,17 +408,19 @@ def build_candidates_with_diagnostics(signal_date: pd.Timestamp, pos: pd.DataFra
         score = rsi
         stats["passed"] += 1
 
-        candidates.append({
-            "ticker": t,
-            "close": close,
-            "prev_close": prev_close,
-            "ma": ma,
-            "rsi": rsi,
-            "value20": value20,
-            "pullback_ratio": pullback_ratio,
-            "score": score,
-            "i": i,
-        })
+        candidates.append(
+            {
+                "ticker": t,
+                "close": close,
+                "prev_close": prev_close,
+                "ma": ma,
+                "rsi": rsi,
+                "value20": value20,
+                "pullback_ratio": pullback_ratio,
+                "score": score,
+                "i": i,
+            }
+        )
 
     candidates.sort(key=lambda x: x["score"])
     return candidates, stats
@@ -407,23 +429,36 @@ def build_candidates_with_diagnostics(signal_date: pd.Timestamp, pos: pd.DataFra
 def save_candidate_rank(signal_date: pd.Timestamp, candidates: list[dict]):
     rows = []
     for rank, c in enumerate(candidates, start=1):
-        rows.append({
-            "date": signal_date.strftime("%Y-%m-%d"),
-            "rank": rank,
-            "ticker": c["ticker"],
-            "close": c["close"],
-            "prev_close": c["prev_close"],
-            "ma": c["ma"],
-            "rsi": c["rsi"],
-            "value20": c["value20"],
-            "pullback_ratio": c["pullback_ratio"],
-            "score": c["score"],
-        })
+        rows.append(
+            {
+                "date": signal_date.strftime("%Y-%m-%d"),
+                "rank": rank,
+                "ticker": c["ticker"],
+                "close": c["close"],
+                "prev_close": c["prev_close"],
+                "ma": c["ma"],
+                "rsi": c["rsi"],
+                "value20": c["value20"],
+                "pullback_ratio": c["pullback_ratio"],
+                "score": c["score"],
+            }
+        )
 
-    df = pd.DataFrame(rows, columns=[
-        "date", "rank", "ticker", "close", "prev_close",
-        "ma", "rsi", "value20", "pullback_ratio", "score"
-    ])
+    df = pd.DataFrame(
+        rows,
+        columns=[
+            "date",
+            "rank",
+            "ticker",
+            "close",
+            "prev_close",
+            "ma",
+            "rsi",
+            "value20",
+            "pullback_ratio",
+            "score",
+        ],
+    )
     df.to_csv(CANDIDATE_FILE, index=False)
 
 
@@ -480,17 +515,21 @@ def main():
         price = float(df.loc[signal_date, "Close"])
         cash += price * float(p["qty"])
 
-        exits.append({
-            "ticker": p["ticker"],
-            "reason": "time_exit",
-        })
+        exits.append(
+            {
+                "ticker": p["ticker"],
+                "reason": "time_exit",
+            }
+        )
 
     pos = pd.DataFrame(new_pos, columns=POS_COLUMNS)
 
     # =====================
     # ENTRY
     # =====================
-    candidates, filter_stats = build_candidates_with_diagnostics(signal_date, pos, data_cache)
+    candidates, filter_stats = build_candidates_with_diagnostics(
+        signal_date, pos, data_cache
+    )
     save_candidate_rank(signal_date, candidates)
 
     if len(pos) < MAX_POSITIONS and candidates:
@@ -519,14 +558,16 @@ def main():
 
                 pos = pd.concat([pos, pd.DataFrame([new_pos_row])], ignore_index=True)
 
-                entries.append({
-                    "ticker": t,
-                    "signal_date": signal_date.strftime("%Y-%m-%d"),
-                    "entry_price": price,
-                    "qty": qty,
-                    "rsi": c["rsi"],
-                    "score": c["score"],
-                })
+                entries.append(
+                    {
+                        "ticker": t,
+                        "signal_date": signal_date.strftime("%Y-%m-%d"),
+                        "entry_price": price,
+                        "qty": qty,
+                        "rsi": c["rsi"],
+                        "score": c["score"],
+                    }
+                )
 
     # =====================
     # EQUITY
@@ -554,12 +595,10 @@ def main():
     save_positions(pos)
     save_equity(equity, cash, position_value)
 
-    pd.DataFrame(entries, columns=["ticker", "signal_date", "entry_price", "qty", "rsi", "score"]).to_csv(
-        ENTRY_FILE, index=False
-    )
-    pd.DataFrame(exits, columns=["ticker", "reason"]).to_csv(
-        EXIT_FILE, index=False
-    )
+    pd.DataFrame(
+        entries, columns=["ticker", "signal_date", "entry_price", "qty", "rsi", "score"]
+    ).to_csv(ENTRY_FILE, index=False)
+    pd.DataFrame(exits, columns=["ticker", "reason"]).to_csv(EXIT_FILE, index=False)
 
     # =====================
     # LOG
