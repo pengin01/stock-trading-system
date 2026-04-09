@@ -44,8 +44,8 @@ jobs:
           [ -f candidate_rank.csv ] || echo "date,rank,ticker,close,prev_close,ma,rsi,value20,pullback_ratio,score" > candidate_rank.csv
           [ -f nikkei225.csv ] || echo "ticker" > nikkei225.csv
 
-      - name: Run v97 system
-        run: python v97_system.py
+      - name: Run v97 system_etf
+        run: python v97_system_etf.py
 
       - name: Send result to Discord
         if: always()
