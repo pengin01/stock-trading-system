@@ -1,4 +1,4 @@
-name: Daily Signal v97
+name: Daily Signal v97 ETF
 
 on:
   workflow_dispatch:
@@ -42,9 +42,9 @@ jobs:
           [ -f today_entry.csv ] || echo "ticker,signal_date,entry_price,qty,rsi,score" > today_entry.csv
           [ -f today_exit.csv ] || echo "ticker,reason" > today_exit.csv
           [ -f candidate_rank.csv ] || echo "date,rank,ticker,close,prev_close,ma,rsi,value20,pullback_ratio,score" > candidate_rank.csv
-          [ -f nikkei225.csv ] || echo "ticker" > nikkei225.csv
+          [ -f etf_universe.csv ] || printf "ticker\n1306.T\n1321.T\n" > etf_universe.csv
 
-      - name: Run v97 system_etf
+      - name: Run v97 ETF system
         run: python v97_system_etf.py
 
       - name: Send result to Discord
@@ -169,7 +169,7 @@ jobs:
           run_date = pd.Timestamp.now()
 
           lines = []
-          lines.append("📊 **Daily Signal v97**")
+          lines.append("📊 **Daily Signal v97 ETF**")
 
           lines.append("")
           lines.append("🗓 RUN INFO")
@@ -329,15 +329,15 @@ jobs:
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
-          git add -f positions.csv equity.csv cashflow.csv candidate_rank.csv today_entry.csv today_exit.csv
-          git diff --cached --quiet || git commit -m "update state files"
+          git add -f positions.csv equity.csv cashflow.csv candidate_rank.csv today_entry.csv today_exit.csv etf_universe.csv
+          git diff --cached --quiet || git commit -m "update ETF state files"
           git push
 
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: v97-result
+          name: v97-etf-result
           path: |
             today_entry.csv
             today_exit.csv
@@ -345,5 +345,5 @@ jobs:
             equity.csv
             cashflow.csv
             candidate_rank.csv
-            nikkei225.csv
+            etf_universe.csv
           if-no-files-found: warn

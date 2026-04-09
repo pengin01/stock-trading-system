@@ -1,4 +1,4 @@
-# v97_system.py
+# v97_system_etf.py
 # -*- coding: utf-8 -*-
 
 import os
@@ -19,7 +19,7 @@ MAX_POSITIONS = 1
 MA_DAYS = 25
 RSI_DAYS = 14
 RSI_MAX = 65
-MIN_VALUE = 300_000_000
+MIN_VALUE = 100_000_000  # ETF向けに緩和
 
 UNIVERSE_FILE = "etf_universe.csv"
 
@@ -475,7 +475,7 @@ def main():
 
     universe = load_universe()
     if not universe:
-        raise RuntimeError("nikkei225.csv is empty or missing ticker column")
+        raise RuntimeError("etf_universe.csv is empty or missing ticker column")
 
     print("Universe size:", len(universe))
     data_cache = {t: load_data(t) for t in universe}
@@ -493,9 +493,7 @@ def main():
     entries = []
     exits = []
 
-    # =====================
     # EXIT
-    # =====================
     new_pos = []
 
     for _, p in pos.iterrows():
@@ -515,18 +513,11 @@ def main():
         price = float(df.loc[signal_date, "Close"])
         cash += price * float(p["qty"])
 
-        exits.append(
-            {
-                "ticker": p["ticker"],
-                "reason": "time_exit",
-            }
-        )
+        exits.append({"ticker": p["ticker"], "reason": "time_exit"})
 
     pos = pd.DataFrame(new_pos, columns=POS_COLUMNS)
 
-    # =====================
     # ENTRY
-    # =====================
     candidates, filter_stats = build_candidates_with_diagnostics(
         signal_date, pos, data_cache
     )
@@ -569,9 +560,7 @@ def main():
                     }
                 )
 
-    # =====================
     # EQUITY
-    # =====================
     position_value = 0.0
 
     for _, p in pos.iterrows():
@@ -589,9 +578,7 @@ def main():
     total_cashflow = get_total_cashflow_until(signal_date)
     pnl = equity - total_cashflow
 
-    # =====================
     # SAVE
-    # =====================
     save_positions(pos)
     save_equity(equity, cash, position_value)
 
@@ -600,9 +587,7 @@ def main():
     ).to_csv(ENTRY_FILE, index=False)
     pd.DataFrame(exits, columns=["ticker", "reason"]).to_csv(EXIT_FILE, index=False)
 
-    # =====================
     # LOG
-    # =====================
     print("== ENTRY ==")
     print(pd.DataFrame(entries) if entries else "(none)")
 
