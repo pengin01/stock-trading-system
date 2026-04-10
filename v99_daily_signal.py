@@ -61,7 +61,7 @@ def load_data(ticker):
 
 
 def load_market():
-    df = yf.download(MARKET_TICKER, period="6mo", progress=False)
+    df = yf.download(MARKET_TICKER, period="2y", progress=False)
 
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
