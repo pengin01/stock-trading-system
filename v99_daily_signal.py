@@ -1,11 +1,12 @@
 # v99_daily_signal.py
 
-import pandas as pd
-import yfinance as yf
-import ta
 import datetime
 import os
+
+import pandas as pd
 import requests
+import ta
+import yfinance as yf
 
 # =========================
 # PARAMETERS
@@ -38,50 +39,101 @@ POS_FILE = "positions.csv"
 
 
 # =========================
+# HELPERS
+# =========================
+def normalize_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    if isinstance(df.columns, pd.MultiIndex):
+        level0 = list(df.columns.get_level_values(0))
+        level1 = list(df.columns.get_level_values(1))
+        price_names = {"Open", "High", "Low", "Close", "Adj Close", "Volume"}
+
+        if any(x in price_names for x in level0):
+            df.columns = df.columns.get_level_values(0)
+        elif any(x in price_names for x in level1):
+            df.columns = df.columns.get_level_values(1)
+        else:
+            df.columns = ["_".join([str(a), str(b)]) for a, b in df.columns]
+
+    df.columns = [str(c) for c in df.columns]
+    df = df.loc[:, ~pd.Index(df.columns).duplicated()].copy()
+
+    for col in ["Open", "High", "Low", "Close", "Volume"]:
+        if col not in df.columns:
+            raise ValueError(f"missing column: {col}")
+
+        if isinstance(df[col], pd.DataFrame):
+            df[col] = df[col].iloc[:, 0]
+
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    df.index = pd.to_datetime(df.index).tz_localize(None)
+    return df
+
+
+# =========================
 # LOAD
 # =========================
-def load_data(ticker):
-    df = yf.download(ticker, period="6mo", progress=False)
+def load_data(ticker: str) -> pd.DataFrame:
+    try:
+        df = yf.download(ticker, period="1y", progress=False, auto_adjust=False)
+    except Exception as e:
+        print(f"{ticker}: download error: {e}")
+        return pd.DataFrame()
 
     if df.empty:
         return df
 
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
+    try:
+        df = normalize_ohlcv(df)
+    except Exception as e:
+        print(f"{ticker}: normalize error: {e}")
+        return pd.DataFrame()
 
-    for col in ["Open", "High", "Low", "Close", "Volume"]:
-        if isinstance(df[col], pd.DataFrame):
-            df[col] = df[col].iloc[:, 0]
+    close = df["Close"]
+    volume = df["Volume"]
 
-    df["MA"] = df["Close"].rolling(MA_DAYS).mean()
-    df["RSI"] = ta.momentum.RSIIndicator(df["Close"], RSI_DAYS).rsi()
-    df["VALUE20"] = (df["Close"] * df["Volume"]).rolling(20).mean()
+    df["MA"] = close.rolling(MA_DAYS).mean()
+    df["RSI"] = ta.momentum.RSIIndicator(close, RSI_DAYS).rsi()
+    df["VALUE20"] = (close * volume).rolling(20).mean()
 
-    return df.dropna()
+    return df.dropna(
+        subset=["Open", "High", "Low", "Close", "Volume", "MA", "RSI", "VALUE20"]
+    )
 
 
-def load_market():
-    df = yf.download(MARKET_TICKER, period="2y", progress=False)
+def load_market() -> pd.DataFrame:
+    try:
+        df = yf.download(MARKET_TICKER, period="2y", progress=False, auto_adjust=False)
+    except Exception as e:
+        print(f"{MARKET_TICKER}: download error: {e}")
+        return pd.DataFrame()
 
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
+    if df.empty:
+        return df
+
+    try:
+        df = normalize_ohlcv(df)
+    except Exception as e:
+        print(f"{MARKET_TICKER}: normalize error: {e}")
+        return pd.DataFrame()
 
     df["MA200"] = df["Close"].rolling(MARKET_MA_DAYS).mean()
-
-    return df.dropna()
+    return df.dropna(subset=["Close", "MA200"])
 
 
 # =========================
 # POSITION LOAD
 # =========================
-def load_positions():
+def load_positions() -> pd.DataFrame:
     if os.path.exists(POS_FILE):
         return pd.read_csv(POS_FILE, parse_dates=["entry_date"])
-    else:
-        return pd.DataFrame(columns=["ticker", "entry_date", "price", "qty"])
+    return pd.DataFrame(columns=["ticker", "entry_date", "price", "qty"])
 
 
-def save_positions(df):
+def save_positions(df: pd.DataFrame) -> None:
     df.to_csv(POS_FILE, index=False)
 
 
@@ -89,11 +141,13 @@ def save_positions(df):
 # MAIN
 # =========================
 def run():
-
     today = datetime.datetime.now().date()
 
     data = {t: load_data(t) for t in UNIVERSE}
     market = load_market()
+
+    if market.empty:
+        raise RuntimeError("market data is empty")
 
     positions = load_positions()
 
@@ -105,7 +159,7 @@ def run():
 
     for _, p in positions.iterrows():
         ticker = p["ticker"]
-        df = data[ticker]
+        df = data.get(ticker, pd.DataFrame())
 
         if df.empty:
             new_positions.append(p)
@@ -113,16 +167,16 @@ def run():
 
         row = df.iloc[-1]
 
-        entry_price = p["price"]
+        entry_price = float(p["price"])
         tp = entry_price * (1 + TAKE_PROFIT)
         sl = entry_price * (1 - STOP_LOSS)
 
         exit_flag = False
 
-        if row["Low"] <= sl:
+        if float(row["Low"]) <= sl:
             exits.append(f"{ticker} SL")
             exit_flag = True
-        elif row["High"] >= tp:
+        elif float(row["High"]) >= tp:
             exits.append(f"{ticker} TP")
             exit_flag = True
         elif (today - p["entry_date"].date()).days >= HOLD_DAYS:
@@ -136,36 +190,33 @@ def run():
 
     # ===== ENTRY =====
     if len(positions) < MAX_POSITIONS:
-
-        market_up = market.iloc[-1]["Close"] > market.iloc[-1]["MA200"]
+        market_up = float(market.iloc[-1]["Close"]) > float(market.iloc[-1]["MA200"])
         target_universe = BULL_ETF if market_up else BEAR_ETF
 
         for ticker in target_universe:
-
-            if ticker in positions["ticker"].values:
+            if not positions.empty and ticker in positions["ticker"].values:
                 continue
 
-            df = data[ticker]
-
-            if df.empty:
+            df = data.get(ticker, pd.DataFrame())
+            if df.empty or len(df) < 2:
                 continue
 
             row = df.iloc[-1]
             prev = df.iloc[-2]
 
-            if row["Close"] < row["MA"]:
+            if float(row["Close"]) < float(row["MA"]):
                 continue
 
-            if row["Close"] > prev["Close"] * (1 - PULLBACK):
+            if float(row["Close"]) > float(prev["Close"]) * (1 - PULLBACK):
                 continue
 
-            if row["RSI"] > RSI_MAX:
+            if float(row["RSI"]) > RSI_MAX:
                 continue
 
-            if row["VALUE20"] < MIN_VALUE:
+            if float(row["VALUE20"]) < MIN_VALUE:
                 continue
 
-            price = row["Close"]
+            price = float(row["Close"])
             qty = int((INITIAL_CAPITAL * RISK_RATIO) // price)
 
             if qty <= 0:
@@ -176,7 +227,6 @@ def run():
             new_row = pd.DataFrame(
                 [{"ticker": ticker, "entry_date": today, "price": price, "qty": qty}]
             )
-
             positions = pd.concat([positions, new_row], ignore_index=True)
 
             if len(positions) >= MAX_POSITIONS:
@@ -190,12 +240,13 @@ def run():
 # =========================
 # DISCORD
 # =========================
-def send_discord(msg):
+def send_discord(msg: str) -> None:
     url = os.environ.get("DISCORD_WEBHOOK_URL")
     if not url:
         return
 
-    requests.post(url, json={"content": msg})
+    r = requests.post(url, json={"content": msg}, timeout=15)
+    r.raise_for_status()
 
 
 # =========================
