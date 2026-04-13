@@ -30,7 +30,7 @@ jobs:
 
       - name: Prepare positions file if missing
         run: |
-          if [ ! -f positions.csv ]; then
+          if [ ! -s positions.csv ]; then
             echo "ticker,entry_date,price,qty" > positions.csv
           fi
 
