@@ -7,6 +7,7 @@ import pandas as pd
 import requests
 import ta
 import yfinance as yf
+from pandas.errors import EmptyDataError
 
 # =========================
 # PARAMETERS
@@ -128,9 +129,29 @@ def load_market() -> pd.DataFrame:
 # POSITION LOAD
 # =========================
 def load_positions() -> pd.DataFrame:
-    if os.path.exists(POS_FILE):
-        return pd.read_csv(POS_FILE, parse_dates=["entry_date"])
-    return pd.DataFrame(columns=["ticker", "entry_date", "price", "qty"])
+    # if os.path.exists(POS_FILE):
+    #     return pd.read_csv(POS_FILE, parse_dates=["entry_date"])
+    # return pd.DataFrame(columns=["ticker", "entry_date", "price", "qty"])
+    cols = ["ticker", "entry_date", "price", "qty"]
+
+    if not os.path.exists(POS_FILE):
+        return pd.DataFrame(columns=cols)
+
+    # 0バイト対策
+    if os.path.getsize(POS_FILE) == 0:
+        return pd.DataFrame(columns=cols)
+
+    try:
+        df = pd.read_csv(POS_FILE, parse_dates=["entry_date"])
+    except EmptyDataError:
+        return pd.DataFrame(columns=cols)
+
+    # 列不足対策
+    for c in cols:
+        if c not in df.columns:
+            return pd.DataFrame(columns=cols)
+
+    return df[cols]
 
 
 def save_positions(df: pd.DataFrame) -> None:
