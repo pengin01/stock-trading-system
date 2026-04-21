@@ -1,2 +1,1 @@
-date,rank,ticker,close,prev_close,ma,rsi,value20,pullback_ratio,score
-2026-04-09,1,1321.T,58500.0,58960.0,55963.2,57.98495144031837,23963810221.5,-0.007801899592944417,57.98495144031837
+date,rank,ticker,close,prev_close,ma25,ma75,rsi,value20,pullback_ratio,score

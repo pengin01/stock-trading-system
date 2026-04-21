@@ -5,10 +5,10 @@ import matplotlib.pyplot as plt
 # =========================
 # FILE PATHS
 # =========================
-RESULT_DIR = "backtest_results_stock_v6"
-EQUITY_FILE = os.path.join(RESULT_DIR, "equity_v6.csv")
-OUTPUT_PNG = os.path.join(RESULT_DIR, "equity_curve_v6.png")
-OUTPUT_DD_PNG = os.path.join(RESULT_DIR, "drawdown_v6.png")
+RESULT_DIR = "backtest_results_stock_v9"
+EQUITY_FILE = os.path.join(RESULT_DIR, "equity_v9.csv")
+OUTPUT_PNG = os.path.join(RESULT_DIR, "equity_curve_v9.png")
+OUTPUT_DD_PNG = os.path.join(RESULT_DIR, "drawdown_v9.png")
 
 
 def main():
