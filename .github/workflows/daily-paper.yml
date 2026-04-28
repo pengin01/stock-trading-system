@@ -1,0 +1,47 @@
+name: Daily Paper Trade v531
+
+on:
+  schedule:
+    - cron: "5 22 * * *"  # JST 07:05
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install packages
+        run: |
+          pip install -r requirements.txt
+
+      - name: Init CSV
+        run: |
+          [ -f positions.csv ] || echo "ticker,entry_price,entry_date,qty" > positions.csv
+          [ -f trades.csv ] || echo "ticker,entry_price,exit_price,entry_date,exit_date,qty,pnl,return,reason" > trades.csv
+          [ -f candidates.csv ] || echo "date,ticker,close,ma75,volume,vol20,value20,pullback_rate,signal" > candidates.csv
+
+      - name: Run Script
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python v531_daily_paper.py
+
+      - name: Commit results
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "github-actions"
+
+          git add -f positions.csv trades.csv candidates.csv
+          git commit -m "auto update paper trade v531" || echo "no changes"
+
+          git push
