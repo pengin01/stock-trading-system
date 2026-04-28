@@ -1,24 +1,21 @@
-# v500_walkforward_test.py
+# v500_walkforward_test_fast.py
 # -*- coding: utf-8 -*-
 
+import numpy as np
 import pandas as pd
 import yfinance as yf
 
 # ===== 採用パラメータ =====
 INITIAL_CAPITAL = 20000
-
 MA_SHORT = 25
 MA_LONG = 75
 BREAKOUT = 40
-
 VOL_MULT = 1.5
 MA_SLOPE_PCT = 0.02
 BREAKOUT_BUFFER = 1.01
-
 HOLD_DAYS = 7
 MAX_POSITIONS = 2
 RISK_RATIO = 0.5
-
 MIN_VALUE = 100_000_000
 YEARS = 5
 
@@ -46,117 +43,171 @@ TICKERS = [
 ]
 
 
-def load_data(t):
-    df = yf.download(t, period=f"{YEARS}y", progress=False)
-    if df.empty:
-        return df
+def download_all(tickers):
+    """
+    全銘柄を一括取得して、銘柄ごとのDataFrameに分解する
+    """
+    raw = yf.download(
+        tickers,
+        period=f"{YEARS}y",
+        group_by="ticker",
+        auto_adjust=False,
+        progress=False,
+        threads=True,
+    )
 
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
+    print(type(raw))
+    print(raw.shape)
+    print(raw.columns)
+    print(raw.head())
+    result = {}
 
-    df["MA25"] = df["Close"].rolling(MA_SHORT).mean()
-    df["MA75"] = df["Close"].rolling(MA_LONG).mean()
-    df["VOL20"] = df["Volume"].rolling(20).mean()
-    df["VALUE20"] = (df["Close"] * df["Volume"]).rolling(20).mean()
-    df["HH"] = df["Close"].rolling(BREAKOUT).max()
+    # 単一銘柄時の保険
+    if not isinstance(raw.columns, pd.MultiIndex):
+        raw.columns = pd.MultiIndex.from_product([tickers[:1], raw.columns])
 
-    return df.dropna()
+    for t in tickers:
+        if t not in raw.columns.get_level_values(0):
+            continue
+
+        df = raw[t].copy()
+        df = df.dropna(subset=["Close", "Volume"])
+        if df.empty:
+            continue
+
+        df["MA25"] = df["Close"].rolling(MA_SHORT).mean()
+        df["MA75"] = df["Close"].rolling(MA_LONG).mean()
+        df["VOL20"] = df["Volume"].rolling(20).mean()
+        df["VALUE20"] = (df["Close"] * df["Volume"]).rolling(20).mean()
+        df["HH"] = df["Close"].rolling(BREAKOUT).max()
+
+        # エントリー条件を前計算
+        df["ENTRY_OK"] = (
+            (df["Close"] > df["MA25"])
+            & (df["MA25"] > df["MA75"])
+            & (df["Close"] > df["HH"].shift(1) * BREAKOUT_BUFFER)
+            & (df["Volume"] > df["VOL20"] * VOL_MULT)
+            & ((df["MA25"] / df["MA25"].shift(5) - 1) >= MA_SLOPE_PCT)
+            & (df["VALUE20"] >= MIN_VALUE)
+        )
+
+        df = df.dropna().copy()
+        if not df.empty:
+            result[t] = df
+
+    return result
 
 
-data = {t: load_data(t) for t in TICKERS}
-data = {k: v for k, v in data.items() if not v.empty}
+def build_runtime_data(data):
+    """
+    run() 内で pandas をほぼ触らないための前処理
+    """
+    runtime = {}
+    all_dates = set()
+
+    for t, df in data.items():
+        idx = df.index.to_numpy()
+        close = df["Close"].to_numpy(dtype=np.float64)
+        ma25 = df["MA25"].to_numpy(dtype=np.float64)
+        entry_ok = df["ENTRY_OK"].to_numpy(dtype=np.bool_)
+
+        date_to_i = {d: i for i, d in enumerate(idx)}
+        all_dates.update(idx.tolist())
+
+        runtime[t] = {
+            "index": idx,
+            "close": close,
+            "ma25": ma25,
+            "entry_ok": entry_ok,
+            "date_to_i": date_to_i,
+        }
+
+    all_dates = np.array(sorted(all_dates))
+    return runtime, all_dates
+
+
+data = download_all(TICKERS)
+runtime_data, ALL_DATES = build_runtime_data(data)
 
 
 def run(start, end):
-    cash = INITIAL_CAPITAL
-    pos = []
-    eq = []
+    cash = float(INITIAL_CAPITAL)
+    positions = []
+    last_equity = float(INITIAL_CAPITAL)
 
-    dates = sorted(set().union(*[df.index for df in data.values()]))
+    # 必要区間だけに絞る
+    mask = (ALL_DATES >= np.datetime64(start)) & (ALL_DATES <= np.datetime64(end))
+    dates = ALL_DATES[mask]
 
     for d in dates:
-        if d < start or d > end:
-            continue
+        # ===== EXIT =====
+        new_positions = []
+        for p in positions:
+            rt = runtime_data[p["t"]]
+            i = rt["date_to_i"].get(d)
 
-        # EXIT
-        new = []
-        for p in pos:
-            df = data[p["t"]]
-            if d not in df.index:
-                new.append(p)
+            if i is None:
+                new_positions.append(p)
                 continue
 
-            price = df.loc[d, "Close"]
-            ma25 = df.loc[d, "MA25"]
+            price = rt["close"][i]
+            ma25 = rt["ma25"][i]
 
-            hold = (df.index > p["d"]).sum()
+            # 元コードはロジックが怪しいので、ここは「現在日までの保有日数」に修正
+            hold_days = i - p["entry_i"]
 
-            if price >= ma25 and hold < HOLD_DAYS:
-                new.append(p)
-                continue
+            if price >= ma25 and hold_days < HOLD_DAYS:
+                new_positions.append(p)
+            else:
+                cash += price * p["q"]
 
-            cash += price * p["q"]
-        pos = new
+        positions = new_positions
 
-        # ENTRY
-        if len(pos) < MAX_POSITIONS:
-            for t, df in data.items():
-                if any(p["t"] == t for p in pos):
-                    continue
-                if d not in df.index:
-                    continue
+        # ===== ENTRY =====
+        if len(positions) < MAX_POSITIONS:
+            held = {p["t"] for p in positions}
 
-                i = df.index.get_loc(d)
-                if i < BREAKOUT + 5:
-                    continue
-
-                close = df["Close"].iloc[i]
-                ma25 = df["MA25"].iloc[i]
-                ma75 = df["MA75"].iloc[i]
-                hh = df["HH"].iloc[i - 1]
-
-                vol = df["Volume"].iloc[i]
-                vol20 = df["VOL20"].iloc[i]
-                val = df["VALUE20"].iloc[i]
-
-                ma_now = df["MA25"].iloc[i]
-                ma_past = df["MA25"].iloc[i - 5]
-
-                if not (close > ma25 > ma75):
-                    continue
-                if close <= hh * BREAKOUT_BUFFER:
-                    continue
-                if vol <= vol20 * VOL_MULT:
-                    continue
-                if (ma_now / ma_past - 1) < MA_SLOPE_PCT:
-                    continue
-                if val < MIN_VALUE:
+            for t, rt in runtime_data.items():
+                if len(positions) >= MAX_POSITIONS:
+                    break
+                if t in held:
                     continue
 
+                i = rt["date_to_i"].get(d)
+                if i is None:
+                    continue
+                if not rt["entry_ok"][i]:
+                    continue
+
+                close = rt["close"][i]
                 qty = int((cash * RISK_RATIO) // close)
                 if qty <= 0:
                     continue
 
                 cash -= close * qty
-                pos.append({"t": t, "p": close, "d": d, "q": qty})
+                positions.append(
+                    {
+                        "t": t,
+                        "q": qty,
+                        "entry_i": i,
+                    }
+                )
+                held.add(t)
 
-        # EQUITY
-        pv = 0
-        for p in pos:
-            df = data[p["t"]]
-            if d in df.index:
-                pv += df.loc[d, "Close"] * p["q"]
+        # ===== EQUITY =====
+        pv = 0.0
+        for p in positions:
+            rt = runtime_data[p["t"]]
+            i = rt["date_to_i"].get(d)
+            if i is not None:
+                pv += rt["close"][i] * p["q"]
 
-        eq.append(cash + pv)
+        last_equity = cash + pv
 
-    if not eq:
-        return 0
-
-    return eq[-1] / INITIAL_CAPITAL - 1
+    return last_equity / INITIAL_CAPITAL - 1.0
 
 
-# ===== 分割 =====
-print("\n=== WALK FORWARD ===")
+print("\n=== WALK FORWARD FAST ===")
 print("2021-2023:", run(pd.Timestamp("2021-01-01"), pd.Timestamp("2023-12-31")))
 print("2024-2026:", run(pd.Timestamp("2024-01-01"), pd.Timestamp("2026-12-31")))
 print("2024 only:", run(pd.Timestamp("2024-01-01"), pd.Timestamp("2024-12-31")))
