@@ -1,0 +1,201 @@
+# v522_final_stable.py
+# -*- coding: utf-8 -*-
+
+import matplotlib.pyplot as plt
+import pandas as pd
+import yfinance as yf
+
+# ===== 資金 =====
+INITIAL_CAPITAL = 20000
+
+# ===== 最終パラメータ =====
+MAX_POSITIONS = 1
+RISK_RATIO = 1.0
+
+HOLD_DAYS = 11
+PULLBACK_PCT = 0.032
+EXIT_MA_BUFFER = 0.98
+SL_PCT = 0.07
+
+MA_SHORT = 25
+MA_LONG = 75
+MIN_VALUE = 100_000_000
+YEARS = 2
+
+# ★ 最小改善（これだけ追加）
+EXCLUDE_TICKERS = ["6758.T", "4568.T", "4063.T", "4519.T"]
+
+TICKERS = [
+    "7203.T",
+    "6758.T",
+    "9984.T",
+    "8306.T",
+    "8035.T",
+    "6861.T",
+    "6098.T",
+    "9432.T",
+    "6954.T",
+    "4519.T",
+    "6501.T",
+    "7267.T",
+    "6902.T",
+    "8031.T",
+    "4568.T",
+    "4063.T",
+    "7751.T",
+    "8591.T",
+    "9020.T",
+    "4502.T",
+]
+
+
+# ===== データ =====
+def load_data(t):
+    df = yf.download(t, period=f"{YEARS}y", progress=False)
+    if df.empty:
+        return df
+
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+
+    df["MA25"] = df["Close"].rolling(MA_SHORT).mean()
+    df["MA75"] = df["Close"].rolling(MA_LONG).mean()
+    df["VOL20"] = df["Volume"].rolling(20).mean()
+    df["VALUE20"] = (df["Close"] * df["Volume"]).rolling(20).mean()
+
+    return df.dropna()
+
+
+# ===== シグナル =====
+def is_engulf(df, i):
+    if i < 1:
+        return False
+    po, pc = df["Open"].iloc[i - 1], df["Close"].iloc[i - 1]
+    o, c = df["Open"].iloc[i], df["Close"].iloc[i]
+    return pc < po and c > o and o <= pc and c >= po
+
+
+def has_pullback(df, i):
+    if i < 10:
+        return False
+    high = df["Close"].iloc[i - 10 : i].max()
+    return df["Close"].iloc[i] <= high * (1 - PULLBACK_PCT)
+
+
+# ===== バックテスト =====
+def run():
+    cash = INITIAL_CAPITAL
+    pos = []
+    eq = []
+    eq_dates = []
+
+    dates = sorted(set().union(*[df.index for df in data.values()]))
+
+    for d in dates:
+
+        # ===== EXIT =====
+        new_pos = []
+        for p in pos:
+            df = data[p["t"]]
+
+            if d not in df.index:
+                new_pos.append(p)
+                continue
+
+            price = df.loc[d, "Close"]
+            ma25 = df.loc[d, "MA25"]
+
+            entry_i = df.index.get_loc(p["d"])
+            cur_i = df.index.get_loc(d)
+            hold = cur_i - entry_i
+
+            # 損切り
+            if price <= p["p"] * (1 - SL_PCT):
+                cash += price * p["q"]
+                continue
+
+            # MA継続
+            if price >= ma25 * EXIT_MA_BUFFER and hold < HOLD_DAYS:
+                new_pos.append(p)
+                continue
+
+            # それ以外は決済
+            cash += price * p["q"]
+
+        pos = new_pos
+
+        # ===== ENTRY =====
+        if len(pos) < MAX_POSITIONS:
+            for t, df in data.items():
+
+                if t in EXCLUDE_TICKERS:
+                    continue
+
+                if any(p["t"] == t for p in pos):
+                    continue
+
+                if d not in df.index:
+                    continue
+
+                i = df.index.get_loc(d)
+                if i < MA_LONG:
+                    continue
+
+                close = df["Close"].iloc[i]
+
+                if close <= df["MA75"].iloc[i]:
+                    continue
+
+                if df["VALUE20"].iloc[i] < MIN_VALUE:
+                    continue
+
+                if df["Volume"].iloc[i] < df["VOL20"].iloc[i]:
+                    continue
+
+                if not has_pullback(df, i):
+                    continue
+
+                if not is_engulf(df, i):
+                    continue
+
+                qty = int((cash * RISK_RATIO) // close)
+                if qty <= 0:
+                    continue
+
+                cash -= qty * close
+                pos.append({"t": t, "p": close, "d": d, "q": qty})
+                break
+
+        # ===== EQUITY =====
+        pv = 0
+        for p in pos:
+            df = data[p["t"]]
+            if d in df.index:
+                pv += df.loc[d, "Close"] * p["q"]
+
+        eq.append(cash + pv)
+        eq_dates.append(d)
+
+    df_eq = pd.DataFrame({"date": eq_dates, "equity": eq})
+    df_eq["peak"] = df_eq["equity"].cummax()
+    df_eq["dd"] = df_eq["equity"] / df_eq["peak"] - 1
+
+    return df_eq
+
+
+# ===== 実行 =====
+data = {t: load_data(t) for t in TICKERS}
+data = {k: v for k, v in data.items() if not v.empty}
+
+df = run()
+
+print("\n=== FINAL RESULT v522 ===")
+print("Final Equity:", df["equity"].iloc[-1])
+print("Max DD:", df["dd"].min())
+
+# ===== グラフ =====
+plt.figure(figsize=(12, 6))
+plt.plot(df["date"], df["equity"])
+plt.title("Equity Curve v522 (Stable)")
+plt.grid()
+plt.show()
