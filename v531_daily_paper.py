@@ -2,9 +2,10 @@
 # -*- coding: utf-8 -*-
 
 import os
+
 import pandas as pd
-import yfinance as yf
 import requests
+import yfinance as yf
 
 # ===== 設定 =====
 INITIAL_CAPITAL = 20000
@@ -25,10 +26,26 @@ YEARS = 1
 EXCLUDE_TICKERS = ["6758.T", "4568.T", "4063.T", "4519.T"]
 
 TICKERS = [
-    "7203.T", "6758.T", "9984.T", "8306.T", "8035.T",
-    "6861.T", "6098.T", "9432.T", "6954.T", "4519.T",
-    "6501.T", "7267.T", "6902.T", "8031.T", "4568.T",
-    "4063.T", "7751.T", "8591.T", "9020.T", "4502.T",
+    "7203.T",
+    "6758.T",
+    "9984.T",
+    "8306.T",
+    "8035.T",
+    "6861.T",
+    "6098.T",
+    "9432.T",
+    "6954.T",
+    "4519.T",
+    "6501.T",
+    "7267.T",
+    "6902.T",
+    "8031.T",
+    "4568.T",
+    "4063.T",
+    "7751.T",
+    "8591.T",
+    "9020.T",
+    "4502.T",
 ]
 
 POS_FILE = "positions.csv"
@@ -272,8 +289,7 @@ def run():
         log_trade(trade)
 
         exit_messages.append(
-            f"SELL {ticker} price={price:.1f} "
-            f"ret={ret:.2%} reason={exit_reason}"
+            f"SELL {ticker} price={price:.1f} " f"ret={ret:.2%} reason={exit_reason}"
         )
 
     positions = new_positions
@@ -350,9 +366,7 @@ def run():
 
             positions.append(position)
 
-            buy_messages.append(
-                f'BUY {c["ticker"]} price={entry_price:.1f} qty={qty}'
-            )
+            buy_messages.append(f'BUY {c["ticker"]} price={entry_price:.1f} qty={qty}')
 
     save_candidates(candidates)
     save_positions(positions)
@@ -371,13 +385,6 @@ def run():
 
     print("\n=== POSITIONS ===")
     print(positions if positions else "(none)")
-
-    message = f"""📊 Daily Paper Trade v531
-
-日付: {today.date()}
-
-【EXIT】
-{chr(10).join exit_messages if False else ""}"""
 
     exit_text = "\n".join(exit_messages) if exit_messages else "(none)"
     buy_text = "\n".join(buy_messages) if buy_messages else "(none)"
