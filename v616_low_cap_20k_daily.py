@@ -2,15 +2,17 @@ import os
 from datetime import datetime
 
 import pandas as pd
+import requests
 import yfinance as yf
+from pandas.errors import EmptyDataError
 
 # =====================
 # v616 low-cap 20k daily
-# 2万円運用・100株単位・日次paper運用
+# 2万円運用・100株単位・日次paper運用・Discord通知付き
 # =====================
 
 TICKERS = [
-    "9432.T",  # NTT
+    "9432.T",
     "4564.T",
     "8918.T",
     "5856.T",
@@ -43,85 +45,129 @@ TRADES_FILE = "trades_v616_20k.csv"
 EQUITY_FILE = "equity_v616_20k.csv"
 CANDIDATES_FILE = "candidates_v616_20k.csv"
 
+POS_COLS = ["ticker", "entry_date", "entry_price", "shares", "cost", "score"]
+
+TRADES_COLS = [
+    "ticker",
+    "entry_date",
+    "exit_date",
+    "entry_price",
+    "exit_price",
+    "shares",
+    "cost",
+    "proceeds",
+    "pnl",
+    "return",
+    "reason",
+    "score",
+]
+
+EQUITY_COLS = [
+    "run_date",
+    "signal_date",
+    "cash",
+    "position_value",
+    "equity",
+    "position_count",
+]
+
+CANDIDATE_COLS = [
+    "run_date",
+    "signal_date",
+    "ticker",
+    "close",
+    "score",
+    "ret3",
+    "value20",
+]
+
 
 # =====================
-# CSV初期化
+# CSV安全処理
 # =====================
+def safe_read_csv(path, columns):
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
+        return pd.DataFrame(columns=columns)
+
+    try:
+        df = pd.read_csv(path)
+    except EmptyDataError:
+        return pd.DataFrame(columns=columns)
+
+    for col in columns:
+        if col not in df.columns:
+            df[col] = pd.Series(dtype="object")
+
+    return df[columns]
+
+
+def safe_write_if_missing(path, columns):
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
+        pd.DataFrame(columns=columns).to_csv(path, index=False)
+
+
 def init_files():
-    if not os.path.exists(POS_FILE):
-        pd.DataFrame(
-            columns=["ticker", "entry_date", "entry_price", "shares", "cost", "score"]
-        ).to_csv(POS_FILE, index=False)
-
-    if not os.path.exists(TRADES_FILE):
-        pd.DataFrame(
-            columns=[
-                "ticker",
-                "entry_date",
-                "exit_date",
-                "entry_price",
-                "exit_price",
-                "shares",
-                "cost",
-                "proceeds",
-                "pnl",
-                "return",
-                "reason",
-                "score",
-            ]
-        ).to_csv(TRADES_FILE, index=False)
-
-    if not os.path.exists(EQUITY_FILE):
-        pd.DataFrame(
-            columns=[
-                "run_date",
-                "signal_date",
-                "cash",
-                "position_value",
-                "equity",
-                "position_count",
-            ]
-        ).to_csv(EQUITY_FILE, index=False)
-
-    if not os.path.exists(CANDIDATES_FILE):
-        pd.DataFrame(
-            columns=[
-                "run_date",
-                "signal_date",
-                "ticker",
-                "close",
-                "score",
-                "ret3",
-                "value20",
-            ]
-        ).to_csv(CANDIDATES_FILE, index=False)
+    safe_write_if_missing(POS_FILE, POS_COLS)
+    safe_write_if_missing(TRADES_FILE, TRADES_COLS)
+    safe_write_if_missing(EQUITY_FILE, EQUITY_COLS)
+    safe_write_if_missing(CANDIDATES_FILE, CANDIDATE_COLS)
 
 
 def load_positions():
-    df = pd.read_csv(POS_FILE)
+    df = safe_read_csv(POS_FILE, POS_COLS)
+
     if len(df) == 0:
         return []
+
     df["entry_date"] = pd.to_datetime(df["entry_date"])
     return df.to_dict("records")
 
 
 def save_positions(positions):
-    pd.DataFrame(positions).to_csv(POS_FILE, index=False)
+    df = pd.DataFrame(positions)
+
+    if len(df) == 0:
+        df = pd.DataFrame(columns=POS_COLS)
+
+    df.to_csv(POS_FILE, index=False)
 
 
 def load_cash():
-    trades = pd.read_csv(TRADES_FILE)
-    positions = pd.read_csv(POS_FILE)
+    trades = safe_read_csv(TRADES_FILE, TRADES_COLS)
+    positions = safe_read_csv(POS_FILE, POS_COLS)
 
     cash = INITIAL_CAPITAL
 
     if len(trades) > 0:
+        trades["pnl"] = pd.to_numeric(trades["pnl"], errors="coerce").fillna(0)
         cash += trades["pnl"].sum()
 
     if len(positions) > 0:
+        positions["cost"] = pd.to_numeric(positions["cost"], errors="coerce").fillna(0)
         cash -= positions["cost"].sum()
 
     return cash
+
+
+# =====================
+# Discord通知
+# =====================
+def send_discord(message):
+    url = os.getenv("DISCORD_WEBHOOK_URL")
+
+    if not url:
+        print("DISCORD_WEBHOOK_URL not set")
+        return
+
+    try:
+        res = requests.post(url, json={"content": message}, timeout=10)
+        print("Discord status:", res.status_code)
+
+        if res.status_code >= 300:
+            print("Discord response:", res.text)
+
+    except Exception as e:
+        print("Discord error:", e)
 
 
 # =====================
@@ -162,12 +208,16 @@ def download_data():
     for ticker in TICKERS:
         print("Downloading:", ticker)
 
-        df = yf.download(
-            ticker,
-            start=START,
-            auto_adjust=False,
-            progress=False,
-        )
+        try:
+            df = yf.download(
+                ticker,
+                start=START,
+                auto_adjust=False,
+                progress=False,
+            )
+        except Exception as e:
+            print("download error:", ticker, e)
+            continue
 
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
@@ -177,6 +227,10 @@ def download_data():
             continue
 
         df = calc_indicators(df).dropna().copy()
+
+        if len(df) == 0:
+            continue
+
         data[ticker] = df
 
     return data
@@ -196,6 +250,7 @@ def run():
 
     if len(data) == 0:
         print("No data")
+        send_discord("⚠️ v616 LOW-CAP 20K DAILY\nNo data")
         return
 
     signal_date = max(df.index[-1] for df in data.values())
@@ -280,6 +335,7 @@ def run():
             }
 
             sells.append(sell)
+
         else:
             new_positions.append(pos)
 
@@ -354,7 +410,6 @@ def run():
 
             positions.append(pos)
             buys.append(pos)
-
             break
 
     # =====================
@@ -377,18 +432,19 @@ def run():
     save_positions(positions)
 
     if sells:
-        old = pd.read_csv(TRADES_FILE)
+        old = safe_read_csv(TRADES_FILE, TRADES_COLS)
         pd.concat([old, pd.DataFrame(sells)], ignore_index=True).to_csv(
             TRADES_FILE, index=False
         )
 
     if candidates:
-        old = pd.read_csv(CANDIDATES_FILE)
+        old = safe_read_csv(CANDIDATES_FILE, CANDIDATE_COLS)
         pd.concat([old, pd.DataFrame(candidates)], ignore_index=True).to_csv(
             CANDIDATES_FILE, index=False
         )
 
-    old_eq = pd.read_csv(EQUITY_FILE)
+    old_eq = safe_read_csv(EQUITY_FILE, EQUITY_COLS)
+
     new_eq = pd.DataFrame(
         [
             {
@@ -440,6 +496,74 @@ def run():
 
     print("\nPOS:")
     print(positions)
+
+    # =====================
+    # Discord通知
+    # =====================
+    sell_text = (
+        "\n".join(
+            [f'- {s["ticker"]} {s["reason"]} pnl={round(s["pnl"], 1)}' for s in sells]
+        )
+        if sells
+        else "none"
+    )
+
+    buy_text = (
+        "\n".join(
+            [
+                f'- {b["ticker"]} entry={round(float(b["entry_price"]), 2)} cost={round(float(b["cost"]), 1)}'
+                for b in buys
+            ]
+        )
+        if buys
+        else "none"
+    )
+
+    candidate_text = (
+        "\n".join(
+            [
+                f'- {c["ticker"]} close={round(float(c["close"]), 2)} score={round(float(c["score"]), 4)}'
+                for c in candidates[:5]
+            ]
+        )
+        if candidates
+        else "none"
+    )
+
+    pos_text = (
+        "\n".join(
+            [
+                f'- {p["ticker"]} entry={round(float(p["entry_price"]), 2)} cost={round(float(p["cost"]), 1)}'
+                for p in positions
+            ]
+        )
+        if positions
+        else "none"
+    )
+
+    msg = f"""📊 v616 LOW-CAP 20K DAILY
+
+run_date: {run_date}
+signal_date: {signal_date.strftime("%Y-%m-%d")}
+
+💰 equity: {round(equity, 2)}
+💵 cash: {round(cash, 2)}
+📦 positions: {len(positions)}
+
+SELL:
+{sell_text}
+
+BUY:
+{buy_text}
+
+CANDIDATES:
+{candidate_text}
+
+POS:
+{pos_text}
+"""
+
+    send_discord(msg)
 
     print("\nSaved:")
     print(POS_FILE)
