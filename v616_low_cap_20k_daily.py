@@ -1,6 +1,7 @@
 import os
 from datetime import datetime
 
+import matplotlib.pyplot as plt
 import pandas as pd
 import requests
 import yfinance as yf
@@ -8,7 +9,7 @@ from pandas.errors import EmptyDataError
 
 # =====================
 # v616 low-cap 20k daily
-# 2万円運用・100株単位・日次paper運用・Discord通知付き
+# 2万円運用・100株単位・日次paper運用・Discord通知・equity画像付き
 # =====================
 
 TICKERS = [
@@ -44,41 +45,22 @@ POS_FILE = "positions_v616_20k.csv"
 TRADES_FILE = "trades_v616_20k.csv"
 EQUITY_FILE = "equity_v616_20k.csv"
 CANDIDATES_FILE = "candidates_v616_20k.csv"
+CHART_FILE = "equity_v616_chart.png"
 
 POS_COLS = ["ticker", "entry_date", "entry_price", "shares", "cost", "score"]
 
 TRADES_COLS = [
-    "ticker",
-    "entry_date",
-    "exit_date",
-    "entry_price",
-    "exit_price",
-    "shares",
-    "cost",
-    "proceeds",
-    "pnl",
-    "return",
-    "reason",
-    "score",
+    "ticker", "entry_date", "exit_date", "entry_price", "exit_price",
+    "shares", "cost", "proceeds", "pnl", "return", "reason", "score"
 ]
 
 EQUITY_COLS = [
-    "run_date",
-    "signal_date",
-    "cash",
-    "position_value",
-    "equity",
-    "position_count",
+    "run_date", "signal_date", "cash", "position_value",
+    "equity", "position_count"
 ]
 
 CANDIDATE_COLS = [
-    "run_date",
-    "signal_date",
-    "ticker",
-    "close",
-    "score",
-    "ret3",
-    "value20",
+    "run_date", "signal_date", "ticker", "close", "score", "ret3", "value20"
 ]
 
 
@@ -157,6 +139,7 @@ def send_discord(message):
 
     if not url:
         print("DISCORD_WEBHOOK_URL not set")
+        print(message)
         return
 
     try:
@@ -168,6 +151,58 @@ def send_discord(message):
 
     except Exception as e:
         print("Discord error:", e)
+
+
+def send_discord_image(path):
+    url = os.getenv("DISCORD_WEBHOOK_URL")
+
+    if not url:
+        print("DISCORD_WEBHOOK_URL not set; skip image")
+        return
+
+    if not path or not os.path.exists(path):
+        print("chart not found; skip image")
+        return
+
+    try:
+        with open(path, "rb") as f:
+            res = requests.post(
+                url,
+                files={"file": f},
+                timeout=20,
+            )
+        print("Discord image status:", res.status_code)
+
+        if res.status_code >= 300:
+            print("Discord image response:", res.text)
+
+    except Exception as e:
+        print("Discord image error:", e)
+
+
+def create_equity_chart():
+    df = safe_read_csv(EQUITY_FILE, EQUITY_COLS)
+
+    if len(df) == 0:
+        return None
+
+    df["equity"] = pd.to_numeric(df["equity"], errors="coerce")
+    df = df.dropna(subset=["equity"]).reset_index(drop=True)
+
+    if len(df) == 0:
+        return None
+
+    plt.figure(figsize=(8, 4))
+    plt.plot(df.index + 1, df["equity"])
+    plt.title("v616 Equity Curve")
+    plt.xlabel("Run")
+    plt.ylabel("Equity")
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(CHART_FILE)
+    plt.close()
+
+    return CHART_FILE
 
 
 # =====================
@@ -196,7 +231,11 @@ def is_hammer(row):
     upper = h - max(o, c)
     body_safe = max(body, c * 0.001)
 
-    return lower >= body_safe * 2 and upper <= body_safe and body <= rng * 0.4
+    return (
+        lower >= body_safe * 2
+        and upper <= body_safe
+        and body <= rng * 0.4
+    )
 
 
 # =====================
@@ -308,7 +347,7 @@ def run():
             exit_flag = True
 
         if exit_flag:
-            exit_price *= 1 - SLIPPAGE
+            exit_price *= (1 - SLIPPAGE)
 
             gross = exit_price * shares
             fee = gross * FEE_PCT
@@ -363,17 +402,15 @@ def run():
                 score = -float(row["ret3"])
 
                 if score >= MIN_SCORE:
-                    candidates.append(
-                        {
-                            "run_date": run_date,
-                            "signal_date": signal_date.strftime("%Y-%m-%d"),
-                            "ticker": ticker,
-                            "close": close,
-                            "score": score,
-                            "ret3": float(row["ret3"]),
-                            "value20": float(row["value20"]),
-                        }
-                    )
+                    candidates.append({
+                        "run_date": run_date,
+                        "signal_date": signal_date.strftime("%Y-%m-%d"),
+                        "ticker": ticker,
+                        "close": close,
+                        "score": score,
+                        "ret3": float(row["ret3"]),
+                        "value20": float(row["value20"]),
+                    })
 
         candidates = sorted(candidates, key=lambda x: x["score"], reverse=True)
 
@@ -445,18 +482,14 @@ def run():
 
     old_eq = safe_read_csv(EQUITY_FILE, EQUITY_COLS)
 
-    new_eq = pd.DataFrame(
-        [
-            {
-                "run_date": run_date,
-                "signal_date": signal_date.strftime("%Y-%m-%d"),
-                "cash": cash,
-                "position_value": position_value,
-                "equity": equity,
-                "position_count": len(positions),
-            }
-        ]
-    )
+    new_eq = pd.DataFrame([{
+        "run_date": run_date,
+        "signal_date": signal_date.strftime("%Y-%m-%d"),
+        "cash": cash,
+        "position_value": position_value,
+        "equity": equity,
+        "position_count": len(positions),
+    }])
 
     pd.concat([old_eq, new_eq], ignore_index=True).to_csv(EQUITY_FILE, index=False)
 
@@ -500,46 +533,24 @@ def run():
     # =====================
     # Discord通知
     # =====================
-    sell_text = (
-        "\n".join(
-            [f'- {s["ticker"]} {s["reason"]} pnl={round(s["pnl"], 1)}' for s in sells]
-        )
-        if sells
-        else "none"
-    )
+    sell_text = "\n".join(
+        [f'- {s["ticker"]} {s["reason"]} pnl={round(float(s["pnl"]), 1)}' for s in sells]
+    ) if sells else "none"
 
-    buy_text = (
-        "\n".join(
-            [
-                f'- {b["ticker"]} entry={round(float(b["entry_price"]), 2)} cost={round(float(b["cost"]), 1)}'
-                for b in buys
-            ]
-        )
-        if buys
-        else "none"
-    )
+    buy_text = "\n".join(
+        [f'- {b["ticker"]} entry={round(float(b["entry_price"]), 2)} cost={round(float(b["cost"]), 1)}' for b in buys]
+    ) if buys else "none"
 
-    candidate_text = (
-        "\n".join(
-            [
-                f'- {c["ticker"]} close={round(float(c["close"]), 2)} score={round(float(c["score"]), 4)}'
-                for c in candidates[:5]
-            ]
-        )
-        if candidates
-        else "none"
-    )
+    candidate_text = "\n".join(
+        [
+            f'{i + 1}. {c["ticker"]} score={round(float(c["score"]), 4)} close={round(float(c["close"]), 2)}'
+            for i, c in enumerate(candidates[:5])
+        ]
+    ) if candidates else "none"
 
-    pos_text = (
-        "\n".join(
-            [
-                f'- {p["ticker"]} entry={round(float(p["entry_price"]), 2)} cost={round(float(p["cost"]), 1)}'
-                for p in positions
-            ]
-        )
-        if positions
-        else "none"
-    )
+    pos_text = "\n".join(
+        [f'- {p["ticker"]} entry={round(float(p["entry_price"]), 2)} cost={round(float(p["cost"]), 1)}' for p in positions]
+    ) if positions else "none"
 
     msg = f"""📊 v616 LOW-CAP 20K DAILY
 
@@ -556,7 +567,7 @@ SELL:
 BUY:
 {buy_text}
 
-CANDIDATES:
+🏆 TOP CANDIDATES:
 {candidate_text}
 
 POS:
@@ -565,11 +576,16 @@ POS:
 
     send_discord(msg)
 
+    chart = create_equity_chart()
+    if chart:
+        send_discord_image(chart)
+
     print("\nSaved:")
     print(POS_FILE)
     print(TRADES_FILE)
     print(EQUITY_FILE)
     print(CANDIDATES_FILE)
+    print(CHART_FILE)
 
 
 if __name__ == "__main__":
