@@ -1,0 +1,66 @@
+name: v624 Robust Low Cap Daily
+
+on:
+  schedule:
+    # JST 07:20 = UTC 22:20
+    - cron: "20 22 * * 0-4"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  daily:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas yfinance requests matplotlib
+
+      - name: Init CSV files if missing
+        run: |
+          if [ ! -f positions_v624.csv ]; then
+            echo "ticker,entry_date,entry_price,shares,cost,score,hold_days" > positions_v624.csv
+          fi
+
+          if [ ! -f trades_v624.csv ]; then
+            echo "ticker,entry_date,exit_date,entry_price,exit_price,shares,cost,proceeds,pnl,return,reason,score,hold_days" > trades_v624.csv
+          fi
+
+          if [ ! -f equity_v624.csv ]; then
+            echo "run_date,signal_date,cash,position_value,equity,position_count" > equity_v624.csv
+          fi
+
+          if [ ! -f candidates_v624.csv ]; then
+            echo "run_date,signal_date,ticker,close,score,ret3,value20,hold_days" > candidates_v624.csv
+          fi
+
+      - name: Run v624 daily
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          python v624_robust_low_cap_daily.py
+
+      - name: Commit result files
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          git add -f positions_v624.csv trades_v624.csv equity_v624.csv candidates_v624.csv equity_v624_chart.png
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Update v624 daily paper results"
+            git push
+          fi
